@@ -47,6 +47,9 @@ func NewDiagCacheStream(cryptoParams *crypto.CryptoParams, filePrefix string, bl
 	if isWrite {
 		if _, err := os.Stat(filename); os.IsNotExist(err) {
 			file, err = os.Create(filename)
+			if err != nil {
+				panic(err)
+			}
 			log.LLvl1(time.Now().Format(time.RFC3339), "Created cache file:", filename)
 		} else {
 			log.LLvl1(time.Now().Format(time.RFC3339), "Found cache file:", filename)
@@ -226,8 +229,6 @@ func (dcs *DiagCacheStream) WriteDiag(pv crypto.PlainVector, shift uint32) {
 	binary.LittleEndian.PutUint64(buf, pointer)
 	dcs.writer.Write(buf)
 	dcs.writer.Write(dcs.buf[:pointer])
-
-	return
 }
 
 func (dcs *DiagCacheStream) Close() {

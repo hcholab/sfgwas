@@ -8,24 +8,23 @@ out_fname = sys.argv[4]
 
 print("Called transposeMatrix.py:", in_fname, nrows, ncols, out_fname)
 
-print('Loading matrix.. ', end='')
+print("Loading matrix.. ", end="")
 arr = np.fromfile(in_fname, dtype=np.int8)
-print('done.')
+print("done.")
 
-print('Input array length:', len(arr))
+print("Input array length:", len(arr))
 
 arr = np.reshape(arr, (nrows, ncols))
 
-print('Input dimensions:', arr.shape)
+print("Input dimensions:", arr.shape)
 
-print('Transposing.. ', end='')
+print("Transposing.. ", end="")
 arr = arr.transpose()
-print('done.')
+print("done.")
 
-print('Output dimensions:', arr.shape)
+print("Output dimensions:", arr.shape)
 
-print('Writing to disk.. ', end='')
-outfile = open(out_fname, 'wb')
-arr.tofile(outfile)
-outfile.close()
-print('done.')
+print("Writing to disk.. ", end="")
+with open(out_fname, "wb") as outfile:
+    arr.tofile(outfile)
+print("done.")

@@ -354,7 +354,7 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 			pv := mpcObj.Network.CollectiveDecryptVec(cryptoParams, Q[0], 1)
 			log.LLvl1(time.Now().Format(time.RFC3339), "After power iter", crypto.DecodeFloatVector(cryptoParams, pv)[:5])
 			for outp := 1; outp < mpcObj.GetNParty(); outp++ {
-				SaveMatrixToFile(cryptoParams, mpcObj, Q, nRowsAll[outp], outp, pca.general.CachePath(fmt.Sprintf("Q_final.txt")))
+				SaveMatrixToFile(cryptoParams, mpcObj, Q, nRowsAll[outp], outp, pca.general.CachePath("Q_final.txt"))
 			}
 		}
 

@@ -23,7 +23,7 @@ import (
 type ProtocolInfo struct {
 	mpcObj mpc.ParallelMPC
 	cps    *crypto.CryptoParams
-	cpsPar []*crypto.CryptoParams // One per thread
+	// cpsPar []*crypto.CryptoParams // One per thread
 
 	// Input files
 	genoBlocks     []*GenoFileStream
@@ -524,7 +524,7 @@ func (g *ProtocolInfo) SyncAndTerminate(closeChannelFlag bool) {
 		}
 	} else {
 		mainMPCObj.Network.SendRData(dummy, 0)
-		dummy = mainMPCObj.Network.ReceiveRElem(dummy, 0)
+		_ = mainMPCObj.Network.ReceiveRElem(dummy, 0)
 	}
 
 	if closeChannelFlag {

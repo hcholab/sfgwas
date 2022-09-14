@@ -23,7 +23,7 @@ type GWASParams struct {
 
 	minSnpDist uint64
 
-	skipQC bool
+	// skipQC bool
 	runPCA bool // LMM or PCA
 }
 

@@ -8,21 +8,20 @@ out_fname = sys.argv[4]
 
 print("Called mergeMatrices.py:", in_prefix, nrows, sys.argv[3], out_fname)
 
-print('Loading matrices.. ', end='')
+print("Loading matrices.. ", end="")
 arrs = [None] * len(ncols)
 for i in range(len(arrs)):
-    arrs[i] = np.fromfile("{}.{}.bin".format(in_prefix, i), dtype=np.int8)
+    arrs[i] = np.fromfile(f"{in_prefix}.{i}.bin", dtype=np.int8)
     arrs[i] = np.reshape(arrs[i], (nrows, ncols[i]))
-print('done.')
+print("done.")
 
-print('Merging.. ', end='')
+print("Merging.. ", end="")
 arr = np.concatenate(arrs, axis=1)
-print('done.')
+print("done.")
 
-print('Output dimensions:', arr.shape)
+print("Output dimensions:", arr.shape)
 
-print('Writing to disk.. ', end='')
-outfile = open(out_fname, 'wb')
-arr.tofile(outfile)
-outfile.close()
-print('done.')
+print("Writing to disk.. ", end="")
+with open(out_fname, "wb") as outfile:
+    arr.tofile(outfile)
+print("done.")

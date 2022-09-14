@@ -241,11 +241,11 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 			ncolCurr := ncols - j
 
 			// Compute 2 * v * v^T * Q
-			QSlice := make(crypto.CipherMatrix, 1) //check
-			QSlice = Q[j:]
+			// QSlice := make(crypto.CipherMatrix, 1) //check
+			QSlice := Q[j:]
 
-			vMat := make(crypto.CipherMatrix, 1) //check
-			vMat = crypto.CipherMatrix{vList[j]}
+			// vMat := make(crypto.CipherMatrix, 1) //check
+			vMat := crypto.CipherMatrix{vList[j]}
 
 			fn := func(cp *crypto.CryptoParams, a crypto.CipherVector,
 				B crypto.CipherMatrix, j int) crypto.CipherVector {
