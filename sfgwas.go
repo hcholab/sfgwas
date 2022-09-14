@@ -8,8 +8,8 @@ import (
 	"strconv"
 
 	"github.com/BurntSushi/toml"
-	"github.com/hhcho/sfgwas/gwas"
 	"github.com/raulk/go-watchdog"
+	"github.com/simonjmendelsohn/sfgwas/gwas"
 )
 
 // Expects a party ID provided as an environment variable;

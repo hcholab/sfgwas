@@ -8,7 +8,7 @@ import (
 	"go.dedis.ch/onet/v3/log"
 
 	mpc_core "github.com/hhcho/mpc-core"
-	"github.com/hhcho/sfgwas/crypto"
+	"github.com/simonjmendelsohn/sfgwas/crypto"
 
 	"github.com/ldsec/lattigo/v2/ckks"
 )

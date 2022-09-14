@@ -5,8 +5,8 @@ import (
 	"time"
 
 	mpc_core "github.com/hhcho/mpc-core"
-	"github.com/hhcho/sfgwas/crypto"
 	"github.com/ldsec/lattigo/v2/ring"
+	"github.com/simonjmendelsohn/sfgwas/crypto"
 	"go.dedis.ch/onet/v3/log"
 )
 

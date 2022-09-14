@@ -7,10 +7,10 @@ import (
 	"time"
 
 	mpc_core "github.com/hhcho/mpc-core"
-	"github.com/hhcho/sfgwas/crypto"
+	"github.com/simonjmendelsohn/sfgwas/crypto"
 
-	"github.com/hhcho/sfgwas/mpc"
 	"github.com/ldsec/lattigo/v2/ckks"
+	"github.com/simonjmendelsohn/sfgwas/mpc"
 	"go.dedis.ch/onet/v3/log"
 
 	"gonum.org/v1/gonum/mat"

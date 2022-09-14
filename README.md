@@ -38,9 +38,9 @@ git clone https://github.com/hhcho/mpc-core
 To install SF-GWAS, clone the repository and try building as follows.
 
 ```
-git clone https://github.com/hhcho/sfgwas
+git clone https://github.com/simonjmendelsohn/sfgwas
 cd sfgwas
-go get github.com/hhcho/sfgwas
+go get github.com/simonjmendelsohn/sfgwas
 go build
 ```
 
@@ -117,3 +117,4 @@ Once SF-GWAS finishes, it generates `assoc.txt` in the output directory specifie
 ## Contact for questions
 
 Hoon Cho, hhcho@broadinstitute.org
+Simon Mendelsohn, smendels@broadinstitute.org
