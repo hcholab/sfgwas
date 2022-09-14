@@ -8,7 +8,7 @@ import (
 
 	"github.com/aead/chacha20/chacha"
 	"github.com/hhcho/frand"
-	"github.com/hhcho/sfgwas-private/crypto"
+	"github.com/hhcho/sfgwas/crypto"
 	"github.com/ldsec/lattigo/v2/dckks"
 	"github.com/ldsec/lattigo/v2/ring"
 	"github.com/ldsec/lattigo/v2/utils"
@@ -343,7 +343,7 @@ func (netObj *Network) CollectiveBootstrapMat(cps *crypto.CryptoParams, cm crypt
 
 }
 
-//BootstrapMatAll: collective bootstrap for all parties (except 0)
+// BootstrapMatAll: collective bootstrap for all parties (except 0)
 func (netObj *Network) BootstrapMatAll(cps *crypto.CryptoParams, cm crypto.CipherMatrix) crypto.CipherMatrix {
 
 	tmp := make(crypto.CipherMatrix, len(cm))
