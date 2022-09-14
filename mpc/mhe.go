@@ -252,8 +252,6 @@ func (netObj *Network) CollectiveBootstrap(cps *crypto.CryptoParams, ct *ckks.Ci
 	refProtocol.Decrypt(ct, refAgg1)           // Masked decryption
 	refProtocol.Recode(ct, parameters.Scale()) // Masked re-encoding
 	refProtocol.Recrypt(ct, crp, refAgg2)      // Masked re-encryption
-
-	return
 }
 
 func (netObj *Network) CollectiveBootstrapVec(cps *crypto.CryptoParams, cv crypto.CipherVector, sourcePid int) crypto.CipherVector {

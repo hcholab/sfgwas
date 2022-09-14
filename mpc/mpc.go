@@ -109,7 +109,7 @@ func pascalmat(rtype mpc_core.RElem, pow int) mpc_core.RMat {
 	return res
 }
 
-//GetPascalMat retrieves the pascal matrix associated with the given power
+// GetPascalMat retrieves the pascal matrix associated with the given power
 func (mpcObj *MPC) GetPascalMatrix(rtype mpc_core.RElem, pow int) mpc_core.RMat {
 	k := TypedKey{pow, rtype.TypeID()}
 
@@ -483,8 +483,7 @@ func (mpcObj *MPC) Powers(a mpc_core.RVec, pow int) mpc_core.RMat {
 		arpow[p].MulElem(ar)
 	}
 
-	var t mpc_core.RMat
-	t = mpcObj.GetPascalMatrix(rtype, pow)
+	var t mpc_core.RMat = mpcObj.GetPascalMatrix(rtype, pow)
 
 	b := mpc_core.InitRMat(rtype.Zero(), pow+1, n)
 	if pid == 1 {
@@ -1185,11 +1184,11 @@ func (mpcObj *MPC) BinaryPrefixOr(a mpc_core.RMat, numBits int) mpc_core.RMat {
 		}
 	}
 
-	if mpcObj.GetPid() > 0 {
-		// chosen := 0
-		// fmt.Printf("dpro: %064b (round=%d) input\n", mpcObj.RevealSym(out[0][chosen]).Uint64(), 0)
-		// fmt.Printf("dpro: %064b%064b%064b%064b (round=%d) input\n", mpcObj.RevealSym(out[0][chosen]).Uint64(), mpcObj.RevealSym(out[1][chosen]).Uint64(), mpcObj.RevealSym(out[2][chosen]).Uint64(), mpcObj.RevealSym(out[3][chosen]).Uint64(), 0)
-	}
+	// if mpcObj.GetPid() > 0 {
+	// chosen := 0
+	// fmt.Printf("dpro: %064b (round=%d) input\n", mpcObj.RevealSym(out[0][chosen]).Uint64(), 0)
+	// fmt.Printf("dpro: %064b%064b%064b%064b (round=%d) input\n", mpcObj.RevealSym(out[0][chosen]).Uint64(), mpcObj.RevealSym(out[1][chosen]).Uint64(), mpcObj.RevealSym(out[2][chosen]).Uint64(), mpcObj.RevealSym(out[3][chosen]).Uint64(), 0)
+	// }
 
 	numRounds := int(math.Ceil(math.Log2(float64(numBits))))
 	for round := 1; round <= numRounds; round++ {
@@ -1297,11 +1296,11 @@ func (mpcObj *MPC) BinaryPrefixOr(a mpc_core.RMat, numBits int) mpc_core.RMat {
 			}
 		}
 
-		if mpcObj.GetPid() > 0 {
-			// chosen := 0
-			// fmt.Printf("dpro: %064b (round=%d) input\n", mpcObj.RevealSym(out[0][chosen]).Uint64(), round)
-			// fmt.Printf("dpro: %064b%064b%064b%064b (round=%d) input\n", mpcObj.RevealSym(out[0][chosen]).Uint64(), mpcObj.RevealSym(out[1][chosen]).Uint64(), mpcObj.RevealSym(out[2][chosen]).Uint64(), mpcObj.RevealSym(out[3][chosen]).Uint64(), round)
-		}
+		// if mpcObj.GetPid() > 0 {
+		// chosen := 0
+		// fmt.Printf("dpro: %064b (round=%d) input\n", mpcObj.RevealSym(out[0][chosen]).Uint64(), round)
+		// fmt.Printf("dpro: %064b%064b%064b%064b (round=%d) input\n", mpcObj.RevealSym(out[0][chosen]).Uint64(), mpcObj.RevealSym(out[1][chosen]).Uint64(), mpcObj.RevealSym(out[2][chosen]).Uint64(), mpcObj.RevealSym(out[3][chosen]).Uint64(), round)
+		// }
 	}
 
 	// if mpcObj.GetPid() > 0 {
@@ -2574,7 +2573,7 @@ func (mpcObj *MPC) EigenDecomp(A mpc_core.RMat) (V mpc_core.RMat, L mpc_core.RVe
 	}
 
 	for i := n - 1; i >= 1; i-- {
-		fmt.Println(fmt.Sprintf("EigenDecomp: %d-th eigenvalue", i))
+		fmt.Printf("EigenDecomp: %d-th eigenvalue\n", i)
 
 		for it := 0; it < ITER_PER_EVAL; it++ {
 			shift := Ap[i][i]
@@ -2608,9 +2607,7 @@ func (mpcObj *MPC) EigenDecomp(A mpc_core.RMat) (V mpc_core.RMat, L mpc_core.RVe
 
 			if pid > 0 {
 				for j := range Vsub {
-					for k := range Vsub[j] {
-						V[j][k] = Vsub[j][k]
-					}
+					copy(V[j], Vsub[j])
 				}
 			}
 		}

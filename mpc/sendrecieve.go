@@ -51,8 +51,6 @@ func (netObj *Network) SendCiphertext(ct *ckks.Ciphertext, to int) {
 	WriteFull(&conn, bytes)
 
 	netObj.UpdateSenderLog(to, 8+len(bytes))
-
-	return
 }
 
 // SendCipherVector sends ciphervector over a connection

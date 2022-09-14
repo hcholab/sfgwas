@@ -1,5 +1,7 @@
 # SF-GWAS
 
+This fork of the sfgwas package aims to add more features in addition to compatibility with sfkit.
+
 Software for secure and federated genome-wide association studies, as described in:
 
 **Secure and Federated Genome-Wide Association Studies for Biobank-Scale Datasets**\
