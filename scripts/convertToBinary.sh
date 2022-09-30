@@ -1,0 +1,1 @@
+python3 scripts/convertToBinary.py $1 $2 $3 $4

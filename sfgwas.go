@@ -10,20 +10,25 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/raulk/go-watchdog"
 	"github.com/simonjmendelsohn/sfgwas/gwas"
+	"github.com/simonjmendelsohn/sfgwas/pca"
 )
 
 // Expects a party ID provided as an environment variable;
 // e.g., run "PID=1 go run sfgwas.go"
 var PID, PID_ERR = strconv.Atoi(os.Getenv("PID"))
-
-// Default config path
-var CONFIG_PATH = "config/"
+var CONFIG_PATH = "config/pca"
 
 func main() {
-	RunGWAS()
+	if CONFIG_PATH == "config/gwas" {
+		RunGWAS()
+	} else if CONFIG_PATH == "config/pca" {
+		RunPCA()
+	} else {
+		panic("Unknown configuration path")
+	}
 }
 
-func InitProtocol(configPath string) *gwas.ProtocolInfo {
+func InitGWASProtocol(configPath string) *gwas.ProtocolInfo {
 	config := new(gwas.Config)
 
 	// Import global parameters
@@ -52,13 +57,42 @@ func InitProtocol(configPath string) *gwas.ProtocolInfo {
 	return gwas.InitializeGWASProtocol(config, PID, false)
 }
 
+func InitPCAProtocol(configPath string) *pca.ProtocolInfo {
+	config := new(pca.Config)
+
+	// Import global parameters
+	if _, err := toml.DecodeFile(filepath.Join(configPath, "configGlobal.toml"), config); err != nil {
+		fmt.Println(err)
+		return nil
+	}
+
+	// Import local parameters
+	if _, err := toml.DecodeFile(filepath.Join(configPath, fmt.Sprintf("configLocal.Party%d.toml", PID)), config); err != nil {
+		fmt.Println(err)
+		return nil
+	}
+
+	// Create cache/output directories
+	if err := os.MkdirAll(config.CacheDir, 0755); err != nil {
+		panic(err)
+	}
+	if err := os.MkdirAll(config.OutDir, 0755); err != nil {
+		panic(err)
+	}
+
+	// Set max number of threads
+	runtime.GOMAXPROCS(config.LocalNumThreads)
+
+	return pca.InitializePCAProtocol(config, PID, false)
+}
+
 func RunGWAS() {
 	if PID_ERR != nil {
 		panic(PID_ERR)
 	}
 
 	// Initialize protocol
-	prot := InitProtocol(CONFIG_PATH)
+	prot := InitGWASProtocol(CONFIG_PATH)
 
 	// Invoke memory manager
 	err, stopFn := watchdog.HeapDriven(prot.GetConfig().MemoryLimit, 40, watchdog.NewAdaptivePolicy(0.5))
@@ -69,6 +103,27 @@ func RunGWAS() {
 
 	// Run protocol
 	prot.GWAS()
+
+	prot.SyncAndTerminate(true)
+}
+
+func RunPCA() {
+	if PID_ERR != nil {
+		panic(PID_ERR)
+	}
+
+	// Initialize protocol
+	prot := InitPCAProtocol(CONFIG_PATH)
+
+	// Invoke memory manager
+	err, stopFn := watchdog.HeapDriven(prot.GetConfig().MemoryLimit, 40, watchdog.NewAdaptivePolicy(0.5))
+	if err != nil {
+		panic(err)
+	}
+	defer stopFn()
+
+	// Run protocol
+	prot.PCA()
 
 	prot.SyncAndTerminate(true)
 }

@@ -1,0 +1,14 @@
+## Shared keys
+shared_keys_path = "example_data/keys"
+
+## Data files
+input_file = "example_data/pca/party1/data.txt"
+
+## Output and cache paths
+output_dir = "out/party1"
+cache_dir = "cache/party1"
+
+## Computational paramters
+local_num_threads = 8
+memory_limit = 40000000000
+assoc_num_blocks_parallel = 1 # Recommend local_num_threads divided by 4 or 8
