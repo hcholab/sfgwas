@@ -571,14 +571,14 @@ func CPMatMult2F(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, B *ma
 }
 
 type BlockI8 struct {
-	Data [][]int8
+	Data [][]float64
 	r    int
 	c    int
 }
 
 func NewBlockI8(r, c int) BlockI8 {
 	return BlockI8{
-		Data: make([][]int8, r),
+		Data: make([][]float64, r),
 		r:    r,
 		c:    c,
 	}

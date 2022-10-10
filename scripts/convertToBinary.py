@@ -10,15 +10,14 @@ print("Called convertToBinary.py:", in_fname, nrows, ncols, out_fname)
 
 print("Loading matrix.. ", end="")
 # read in tab-delimited matrix
-arr = np.loadtxt(in_fname, delimiter="\t", dtype=int)
-# arr = np.fromfile(in_fname, sep="\t", dteype=int)
+arr = np.loadtxt(in_fname, delimiter="\t", dtype=np.float64)  # float
+
 print("done.")
 
 print("Input array length:", len(arr))
 print("Input dimensions:", arr.shape)
 
-# convert arr to np.int8
-arr = arr.astype(np.int8)
+arr = arr.astype(np.float64)
 
 print("Writing to disk.. ", end="")
 with open(out_fname, "wb") as outfile:

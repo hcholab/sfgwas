@@ -2,7 +2,9 @@ package pca
 
 import (
 	"bufio"
+	"encoding/binary"
 	"io"
+	"math"
 	"os"
 	"time"
 
@@ -29,7 +31,7 @@ func NewFileStream(filename string, numRows, numCols uint64) *FileStream {
 
 	return &FileStream{
 		filename:  filename,
-		buf:       make([]byte, numCols),
+		buf:       make([]byte, numCols*8),
 		numRows:   numRows,
 		numCols:   numCols,
 		reader:    bufio.NewReader(file),
@@ -37,7 +39,7 @@ func NewFileStream(filename string, numRows, numCols uint64) *FileStream {
 	}
 }
 
-func (fs *FileStream) readRow() []int8 {
+func (fs *FileStream) readRow() []float64 {
 	if fs.CheckEOF() {
 		return nil
 	}
@@ -47,11 +49,18 @@ func (fs *FileStream) readRow() []int8 {
 		panic(err)
 	}
 
-	intBuf := make([]int8, len(fs.buf))
+	intBuf := make([]float64, fs.numCols)
 
+	// idx := 0
+	// for i := range fs.buf {
+	// 	intBuf[idx] = float64(fs.buf[i])
+	// 	idx++
+	// }
 	idx := 0
-	for i := range fs.buf {
-		intBuf[idx] = int8(fs.buf[i])
+	i := 0
+	for i < len(fs.buf) {
+		intBuf[idx] = Float64frombytes(fs.buf[i : i+8])
+		i += 8
 		idx++
 	}
 
@@ -98,10 +107,16 @@ func (fs *FileStream) CheckEOF() bool {
 	return false
 }
 
-func (fs *FileStream) NextRow() []int8 {
+func (fs *FileStream) NextRow() []float64 {
 	if fs.CheckEOF() {
 		return nil
 	}
 
 	return fs.readRow()
+}
+
+func Float64frombytes(bytes []byte) float64 {
+	bits := binary.LittleEndian.Uint64(bytes)
+	float := math.Float64frombits(bits)
+	return float
 }

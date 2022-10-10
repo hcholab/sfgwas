@@ -5,11 +5,18 @@ in_fname = sys.argv[1]
 nrows = int(sys.argv[2])
 ncols = int(sys.argv[3])
 out_fname = sys.argv[4]
+dtype_str = sys.argv[5] if len(sys.argv) > 5 else "int8"
+if dtype_str == "int8":
+    dtype = np.int8
+elif dtype_str == "float64":
+    dtype = np.float64
+else:
+    raise ValueError(f"Invalid dtype: {dtype_str}")
 
-print("Called transposeMatrix.py:", in_fname, nrows, ncols, out_fname)
+print("Called transposeMatrix.py:", in_fname, nrows, ncols, out_fname, dtype_str)
 
 print("Loading matrix.. ", end="")
-arr = np.fromfile(in_fname, dtype=np.int8)
+arr = np.fromfile(in_fname, dtype=dtype)
 print("done.")
 
 print("Input array length:", len(arr))

@@ -14,8 +14,8 @@ import (
 	"gonum.org/v1/gonum/mat"
 )
 
-func TransposeMatrixFile(inputFile string, nrows, ncols int, outputFile string) {
-	cmd := exec.Command("/bin/sh", "scripts/transposeMatrix.sh", inputFile, strconv.Itoa(nrows), strconv.Itoa(ncols), outputFile)
+func TransposeMatrixFile(inputFile string, nrows, ncols int, outputFile string, dtype string) {
+	cmd := exec.Command("/bin/sh", "scripts/transposeMatrix.sh", inputFile, strconv.Itoa(nrows), strconv.Itoa(ncols), outputFile, dtype)
 	cout, e := cmd.CombinedOutput()
 	fmt.Print(string(cout))
 	if e != nil {

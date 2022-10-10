@@ -153,7 +153,7 @@ func (prot *ProtocolInfo) PCA() {
 		}
 
 		if _, err := os.Stat(dataPCATranspose); os.IsNotExist(err) {
-			general.TransposeMatrixFile(dataPCA, numRowsPCA, numColumnsPCA, dataPCATranspose)
+			general.TransposeMatrixFile(dataPCA, numRowsPCA, numColumnsPCA, dataPCATranspose, "float64")
 		} else {
 			log.LLvl1("Cache file found:", dataPCATranspose)
 		}
@@ -212,8 +212,8 @@ func (prot *ProtocolInfo) DistributedPCA(X, XT *FileStream, Xcache, XTcache stri
 	numTotRowsSqrtInv := 1.0 / math.Sqrt(float64(totRows))
 
 	// Mean, stdev calculation
-	xsum := make([]uint64, ncol)
-	x2sum := make([]uint64, ncol)
+	xsum := make([]float64, ncol)
+	x2sum := make([]float64, ncol)
 	bucketCount := make([]uint64, kp)
 	posCount := make([]uint64, kp)
 
@@ -277,8 +277,8 @@ func (prot *ProtocolInfo) DistributedPCA(X, XT *FileStream, Xcache, XTcache stri
 			for j := range row {
 				localSketch[randIndex[i]][j] += sgn[i] * float64(row[j])
 
-				xsum[j] += uint64(row[j])
-				x2sum[j] += uint64(row[j] * row[j])
+				xsum[j] += float64(row[j])
+				x2sum[j] += float64(row[j] * row[j])
 			}
 		}
 
@@ -297,13 +297,13 @@ func (prot *ProtocolInfo) DistributedPCA(X, XT *FileStream, Xcache, XTcache stri
 		log.LLvl1(time.Now().Format(time.RFC3339), "Global bucket counts:", bucketCount)
 
 		for i := range sx {
-			sx[i] = rtype.FromUint64(xsum[i])
-			sx2[i] = rtype.FromUint64(x2sum[i])
+			sx[i] = rtype.FromFloat64(xsum[i], fracBits) // fracBits or 2 * fracBits?
+			sx2[i] = rtype.FromFloat64(x2sum[i], fracBits)
 		}
 
 		invN := 1.0 / float64(totRows)
-		sx.MulScalar(rtype.FromFloat64(invN, 2*fracBits))
-		sx2.MulScalar(rtype.FromFloat64(invN, 2*fracBits))
+		sx.MulScalar(rtype.FromFloat64(invN, fracBits)) // 2*fracBits or fracBits?
+		sx2.MulScalar(rtype.FromFloat64(invN, fracBits))
 	}
 
 	XMeanSS := mpcObj.TruncVec(sx, dataBits, fracBits)
@@ -479,7 +479,7 @@ func (prot *ProtocolInfo) DistributedPCA(X, XT *FileStream, Xcache, XTcache stri
 		Z := mpcObj.Network.AggregateCVec(cryptoParams, Zloc)
 
 		// Normalize by 1/N
-		Z = crypto.CMultConst(cryptoParams, Z, 1.0/float64(totRows*1000), true)
+		Z = crypto.CMultConst(cryptoParams, Z, 1.0/float64(totRows*1000), true) // TODO: investigate scaling
 
 		if debug {
 			general.SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{Z}, kp*kp, -1, prot.CachePath("Zgram.txt"))

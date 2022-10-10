@@ -176,7 +176,7 @@ func FilterMatrixFile(inputFile string, nrows, ncols int, rowFilt, colFilt []boo
 }
 
 func TransposeMatrixFile(inputFile string, nrows, ncols int, outputFile string) {
-	cmd := exec.Command("/bin/sh", "scripts/transposeMatrix.sh", inputFile, strconv.Itoa(nrows), strconv.Itoa(ncols), outputFile)
+	cmd := exec.Command("/bin/sh", "scripts/transposeMatrix.sh", inputFile, strconv.Itoa(nrows), strconv.Itoa(ncols), outputFile, "int8")
 	cout, e := cmd.CombinedOutput()
 	fmt.Print(string(cout))
 	if e != nil {
