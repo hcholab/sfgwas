@@ -15,15 +15,15 @@ import (
 
 	"github.com/ldsec/lattigo/v2/ckks"
 
-	"github.com/hhcho/sfgwas-private/crypto"
-	"github.com/hhcho/sfgwas-private/mpc"
+	"github.com/simonjmendelsohn/sfgwas/crypto"
+	"github.com/simonjmendelsohn/sfgwas/mpc"
 	"gonum.org/v1/gonum/mat"
 )
 
 type ProtocolInfo struct {
 	mpcObj mpc.ParallelMPC
 	cps    *crypto.CryptoParams
-	cpsPar []*crypto.CryptoParams // One per thread
+	// cpsPar []*crypto.CryptoParams // One per thread
 
 	// Input files
 	genoBlocks     []*GenoFileStream
@@ -93,6 +93,8 @@ type Config struct {
 
 	OutDir   string `toml:"output_dir"`
 	CacheDir string `toml:"cache_dir"`
+
+	Phase string `toml:"phase"`
 
 	MpcFieldSize                int    `toml:"mpc_field_size"`
 	MpcDataBits                 int    `toml:"mpc_data_bits"`
@@ -395,9 +397,17 @@ func (g *ProtocolInfo) GWAS() {
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Starting GWAS protocol")
 
-	g.Phase1()
-	Qpca := g.Phase2()
-	g.Phase3(Qpca)
+	phase := g.GetConfig().Phase
+	if phase == "1" {
+		g.Phase1()
+	} else if phase == "2" {
+		g.Phase1()
+		g.Phase2()
+	} else {
+		g.Phase1()
+		Qpca := g.Phase2()
+		g.Phase3(Qpca)
+	}
 }
 
 func (g *ProtocolInfo) CZeroTest() {
@@ -514,7 +524,7 @@ func (g *ProtocolInfo) SyncAndTerminate(closeChannelFlag bool) {
 		}
 	} else {
 		mainMPCObj.Network.SendRData(dummy, 0)
-		dummy = mainMPCObj.Network.ReceiveRElem(dummy, 0)
+		_ = mainMPCObj.Network.ReceiveRElem(dummy, 0)
 	}
 
 	if closeChannelFlag {

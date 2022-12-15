@@ -10,13 +10,13 @@ import (
 
 	"go.dedis.ch/onet/v3/log"
 
-	"github.com/hhcho/sfgwas-private/crypto"
 	"github.com/ldsec/lattigo/v2/ring"
+	"github.com/simonjmendelsohn/sfgwas/crypto"
 
 	"math"
 
-	"github.com/hhcho/sfgwas-private/mpc"
 	"github.com/ldsec/lattigo/v2/ckks"
+	"github.com/simonjmendelsohn/sfgwas/mpc"
 
 	"gonum.org/v1/gonum/mat"
 )
@@ -592,11 +592,11 @@ func (b BlockI8) Dims() (int, int) {
 	return b.r, b.c
 }
 
-type BlockF64 mat.Dense
+// type BlockF64 mat.Dense
 
-func (b BlockF64) At(i, j int) float64 {
-	return b.At(i, j)
-}
+// func (b BlockF64) At(i, j int) float64 {
+// 	return b.At(i, j)
+// }
 
 type Block interface {
 	At(int, int) float64
@@ -1036,8 +1036,6 @@ func MatMult4StreamPreprocess(cryptoParams *crypto.CryptoParams, gfs *GenoFileSt
 		writer.Wait()
 		dcs.Close()
 	}
-
-	return
 }
 
 func MatMult4StreamCompute(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, maxLevel int, cacheFilePrefix string) crypto.CipherMatrix {

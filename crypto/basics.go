@@ -35,7 +35,7 @@ func EncryptDense(cryptoParams *CryptoParams, vals *mat.Dense) CipherMatrix {
 	return valsEnc
 }
 
-//Takes PlaintextMatrix and returns a denseMatrix: if col is true (ie pt is a column encoded matrix, then we transpose)
+// Takes PlaintextMatrix and returns a denseMatrix: if col is true (ie pt is a column encoded matrix, then we transpose)
 func PlaintextToDense(cryptoParams *CryptoParams, pt PlainMatrix, ptVecSize int) *mat.Dense {
 	vals := make([]float64, len(pt)*ptVecSize)
 	for i := range pt {
@@ -87,7 +87,7 @@ func GlobalToPartyIndex(cryptoParams *CryptoParams, Arowdims []int, col, nparty 
 	return pid, ctid, slotid
 }
 
-//DCopyEncrypted returns a shallow? copy of A?
+// DCopyEncrypted returns a shallow? copy of A?
 func DCopyEncrypted(A []CipherMatrix) []CipherMatrix {
 	Acopy := make([]CipherMatrix, len(A))
 	for p := range A {
@@ -232,7 +232,7 @@ func Mult(cryptoParams *CryptoParams, ct1 *ckks.Ciphertext, ct2 *ckks.Ciphertext
 	return res
 }
 
-//RotateAndAdd computes the inner sum of a Ciphertext
+// RotateAndAdd computes the inner sum of a Ciphertext
 func RotateAndAdd(cryptoParams *CryptoParams, ct *ckks.Ciphertext, size int) *ckks.Ciphertext {
 	ctOut := ct.CopyNew().Ciphertext()
 	for rotate := 1; rotate < size; rotate *= 2 {
@@ -374,7 +374,7 @@ func CZeros(cryptoParams *CryptoParams, n int) CipherVector {
 	return cv
 }
 
-//column based
+// column based
 func CZeroMat(cryptoParams *CryptoParams, nrows, ncols int) CipherMatrix {
 	cm := make(CipherMatrix, ncols)
 	for r := range cm {

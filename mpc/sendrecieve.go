@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	mpc_core "github.com/hhcho/mpc-core"
-	"github.com/hhcho/sfgwas-private/crypto"
 	"github.com/ldsec/lattigo/v2/ring"
+	"github.com/simonjmendelsohn/sfgwas/crypto"
 
 	"github.com/ldsec/lattigo/v2/ckks"
 )
@@ -37,7 +37,7 @@ func (netObj *Network) SendIntVector(v []uint64, to int) {
 	netObj.UpdateSenderLog(to, len(bytes))
 }
 
-//SendCiphertext sends ciphertext over a connection
+// SendCiphertext sends ciphertext over a connection
 func (netObj *Network) SendCiphertext(ct *ckks.Ciphertext, to int) {
 	conn := netObj.conns[to]
 
@@ -51,11 +51,9 @@ func (netObj *Network) SendCiphertext(ct *ckks.Ciphertext, to int) {
 	WriteFull(&conn, bytes)
 
 	netObj.UpdateSenderLog(to, 8+len(bytes))
-
-	return
 }
 
-//SendCipherVector sends ciphervector over a connection
+// SendCipherVector sends ciphervector over a connection
 func (netObj *Network) SendCipherVector(v crypto.CipherVector, to int) {
 	conn := netObj.conns[to]
 
@@ -75,7 +73,7 @@ func (netObj *Network) SendCipherVector(v crypto.CipherVector, to int) {
 
 }
 
-//SendCipherMatrix sends ciphermatrix over a connection
+// SendCipherMatrix sends ciphermatrix over a connection
 func (netObj *Network) SendCipherMatrix(m crypto.CipherMatrix, to int) {
 	conn := netObj.conns[to]
 
@@ -94,7 +92,7 @@ func (netObj *Network) SendCipherMatrix(m crypto.CipherMatrix, to int) {
 	netObj.UpdateSenderLog(to, len(sbytes)+len(cmbytes))
 }
 
-//SendAllCryptoParams sends cryptoParams to all parties (receives nothing)
+// SendAllCryptoParams sends cryptoParams to all parties (receives nothing)
 func (netObj *Network) SendAllCryptoParams(cps *crypto.CryptoParams) {
 
 	buf := make([]byte, 8)
@@ -111,7 +109,7 @@ func (netObj *Network) SendAllCryptoParams(cps *crypto.CryptoParams) {
 	}
 }
 
-//SendAllCiphertext sends ciphertext over to all parties
+// SendAllCiphertext sends ciphertext over to all parties
 func (netObj *Network) SendAllCiphertext(ct *ckks.Ciphertext, includeZero bool) {
 	for i := 0; i < netObj.NumParties; i++ {
 		if i == 0 && !includeZero {
@@ -123,7 +121,7 @@ func (netObj *Network) SendAllCiphertext(ct *ckks.Ciphertext, includeZero bool) 
 	}
 }
 
-//SendAllCipherVector sends ciphevector over to all parties
+// SendAllCipherVector sends ciphevector over to all parties
 func (netObj *Network) SendAllCipherVector(cv crypto.CipherVector, includeZero bool) {
 	for i := 0; i < netObj.NumParties; i++ {
 		if i == 0 && !includeZero {
@@ -135,7 +133,7 @@ func (netObj *Network) SendAllCipherVector(cv crypto.CipherVector, includeZero b
 	}
 }
 
-//SendAllCipherMatrix sends ciphermatrix over to all parties
+// SendAllCipherMatrix sends ciphermatrix over to all parties
 func (netObj *Network) SendAllCipherMatrix(cm crypto.CipherMatrix, includeZero bool) {
 	for i := 0; i < netObj.NumParties; i++ {
 		if i == 0 && !includeZero {
@@ -180,7 +178,7 @@ func (netObj *Network) SendPolyMat(poly [][]ring.Poly, pid int) {
 
 }
 
-//SendRData sends ring/field elements to party p
+// SendRData sends ring/field elements to party p
 func (netObj *Network) SendRData(data interface{}, p int) {
 	conn := netObj.conns[p]
 	bytes := MarshalRData(data) //convert to bytes
@@ -214,7 +212,7 @@ func (netObj *Network) ReceiveInt(from int) int {
 	return val
 }
 
-//ReceiveCipherVector reads bytes sent over conn, and unmarshals it as a ciphervector
+// ReceiveCipherVector reads bytes sent over conn, and unmarshals it as a ciphervector
 func (netObj *Network) ReceiveIntVector(nElem, from int) []uint64 {
 	conn := netObj.conns[from]
 
@@ -249,7 +247,7 @@ func (netObj *Network) ReceiveCiphertext(cryptoParams *crypto.CryptoParams, from
 	return ct
 }
 
-//ReceiveCipherVector reads bytes sent over conn, and unmarshals it as a ciphervector
+// ReceiveCipherVector reads bytes sent over conn, and unmarshals it as a ciphervector
 func (netObj *Network) ReceiveCipherVector(cryptoParams *crypto.CryptoParams, ncts, from int) crypto.CipherVector {
 	conn := netObj.conns[from]
 
@@ -272,7 +270,7 @@ func (netObj *Network) ReceiveCipherVector(cryptoParams *crypto.CryptoParams, nc
 	return UnmarshalCV(cryptoParams, ncts, sdata, cdata)
 }
 
-//ReceiveCipherMatrix reads bytes sent over conn, and unmarshals it as a ciphermatrix
+// ReceiveCipherMatrix reads bytes sent over conn, and unmarshals it as a ciphermatrix
 func (netObj *Network) ReceiveCipherMatrix(cryptoParams *crypto.CryptoParams, nv, nct, from int) crypto.CipherMatrix {
 	conn := netObj.conns[from]
 
@@ -375,7 +373,7 @@ func (netObj *Network) ReceivePolyMat(pid int) [][]ring.Poly {
 
 //SEND AND RECEIVE FIELD VALUES
 
-//ReceiveRMat receives matrix from party p
+// ReceiveRMat receives matrix from party p
 func (netObj *Network) ReceiveRMat(rtype mpc_core.RElem, n, m, p int) mpc_core.RMat {
 	conn := netObj.conns[p]
 
@@ -451,7 +449,7 @@ func (netObj *Network) ExchangeCiphertext(cryptoParams *crypto.CryptoParams, ct 
 
 }
 
-//ExchangeCipherVector takes in number of cts for vec
+// ExchangeCipherVector takes in number of cts for vec
 func (netObj *Network) ExchangeCipherVector(cryptoParams *crypto.CryptoParams, cv crypto.CipherVector, nct int) []crypto.CipherVector {
 	pid := netObj.pid
 	aggData := make([]crypto.CipherVector, netObj.NumParties)
@@ -472,7 +470,7 @@ func (netObj *Network) ExchangeCipherVector(cryptoParams *crypto.CryptoParams, c
 	return aggData
 }
 
-//ExchangeCipherMatrix takes in number of vectors = len(cm) and number of cts per vec = len(cm[0])
+// ExchangeCipherMatrix takes in number of vectors = len(cm) and number of cts per vec = len(cm[0])
 func (netObj *Network) ExchangeCipherMatrix(cryptoParams *crypto.CryptoParams, cm crypto.CipherMatrix, ncv, nct int) []crypto.CipherMatrix {
 	pid := netObj.pid
 	aggData := make([]crypto.CipherMatrix, netObj.NumParties)

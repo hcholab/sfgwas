@@ -8,7 +8,7 @@ import (
 	"go.dedis.ch/onet/v3/log"
 
 	mpc_core "github.com/hhcho/mpc-core"
-	"github.com/hhcho/sfgwas-private/crypto"
+	"github.com/simonjmendelsohn/sfgwas/crypto"
 
 	"github.com/ldsec/lattigo/v2/ckks"
 )
@@ -354,7 +354,7 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 			pv := mpcObj.Network.CollectiveDecryptVec(cryptoParams, Q[0], 1)
 			log.LLvl1(time.Now().Format(time.RFC3339), "After power iter", crypto.DecodeFloatVector(cryptoParams, pv)[:5])
 			for outp := 1; outp < mpcObj.GetNParty(); outp++ {
-				SaveMatrixToFile(cryptoParams, mpcObj, Q, nRowsAll[outp], outp, pca.general.CachePath(fmt.Sprintf("Q_final.txt")))
+				SaveMatrixToFile(cryptoParams, mpcObj, Q, nRowsAll[outp], outp, pca.general.CachePath("Q_final.txt"))
 			}
 		}
 

@@ -11,7 +11,7 @@ import (
 	"github.com/ldsec/lattigo/v2/ckks"
 	"go.dedis.ch/onet/v3/log"
 
-	"github.com/hhcho/sfgwas-private/crypto"
+	"github.com/simonjmendelsohn/sfgwas/crypto"
 
 	"gonum.org/v1/gonum/mat"
 )
@@ -83,9 +83,7 @@ func (ast *AssocTest) computeCombinedQV2(C crypto.PlainMatrix, Qpc crypto.Cipher
 	CEnc := crypto.EncryptPlaintextMatrix(cryptoParams, C)
 
 	comb := make(crypto.CipherMatrix, len(C)+len(Qpc))
-	for i := range CEnc {
-		comb[i] = CEnc[i]
-	}
+	copy(comb, CEnc)
 	for i := range Qpc {
 		comb[len(CEnc)+i] = Qpc[i]
 	}
@@ -124,143 +122,143 @@ func (ast *AssocTest) computeCombinedQV2(C crypto.PlainMatrix, Qpc crypto.Cipher
 }
 
 // Orthogonal basis of covariates and PCs combined
-func (ast *AssocTest) computeCombinedQ(C crypto.PlainMatrix, Qpc crypto.CipherMatrix) crypto.CipherMatrix {
-	debug := ast.general.config.Debug
-	cryptoParams := ast.general.cps
-	mpcPar := ast.general.mpcObj
-	mpcObj := mpcPar[0]
-	pid := mpcPar[0].GetPid()
-	slots := cryptoParams.GetSlots()
+// func (ast *AssocTest) computeCombinedQ(C crypto.PlainMatrix, Qpc crypto.CipherMatrix) crypto.CipherMatrix {
+// 	debug := ast.general.config.Debug
+// 	cryptoParams := ast.general.cps
+// 	mpcPar := ast.general.mpcObj
+// 	mpcObj := mpcPar[0]
+// 	pid := mpcPar[0].GetPid()
+// 	slots := cryptoParams.GetSlots()
 
-	gwasParams := ast.general.gwasParams
-	nrowsAll := gwasParams.FiltNumInds()
-	nrowsTotal := 0
-	for i := 1; i < len(nrowsAll); i++ {
-		nrowsTotal += nrowsAll[i]
-	}
-	nrowsTotalInv := 1.0 / float64(nrowsTotal)
+// 	gwasParams := ast.general.gwasParams
+// 	nrowsAll := gwasParams.FiltNumInds()
+// 	nrowsTotal := 0
+// 	for i := 1; i < len(nrowsAll); i++ {
+// 		nrowsTotal += nrowsAll[i]
+// 	}
+// 	nrowsTotalInv := 1.0 / float64(nrowsTotal)
 
-	ncov := gwasParams.NumCov()
-	npc := gwasParams.NumPC()
+// 	ncov := gwasParams.NumCov()
+// 	npc := gwasParams.NumPC()
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "Starting QR: C numCols", len(C))
+// 	log.LLvl1(time.Now().Format(time.RFC3339), "Starting QR: C numCols", len(C))
 
-	start := time.Now()
+// 	start := time.Now()
 
-	// QR on covariates
-	var Qi crypto.CipherMatrix
+// 	// QR on covariates
+// 	var Qi crypto.CipherMatrix
 
-	CEnc := crypto.EncryptPlaintextMatrix(cryptoParams, C)
-	Qi = NetDQRenc(cryptoParams, mpcObj, CEnc, nrowsAll)
+// 	CEnc := crypto.EncryptPlaintextMatrix(cryptoParams, C)
+// 	Qi = NetDQRenc(cryptoParams, mpcObj, CEnc, nrowsAll)
 
-	// Alternative approach (DASH): appears to be less accurate, needs a closer look
-	// 	Qi = NetDQRplain(cryptoParams, mpcObj, C, nrowsAll)
+// 	// Alternative approach (DASH): appears to be less accurate, needs a closer look
+// 	// 	Qi = NetDQRplain(cryptoParams, mpcObj, C, nrowsAll)
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "Covariate QR time: ", time.Since(start))
-	log.LLvl1(time.Now().Format(time.RFC3339), "Qi dimensions: r,c :", len(Qi[0]), len(Qi))
+// 	log.LLvl1(time.Now().Format(time.RFC3339), "Covariate QR time: ", time.Since(start))
+// 	log.LLvl1(time.Now().Format(time.RFC3339), "Qi dimensions: r,c :", len(Qi[0]), len(Qi))
 
-	Qi = mpcObj.Network.BootstrapMatAll(cryptoParams, Qi)
+// 	Qi = mpcObj.Network.BootstrapMatAll(cryptoParams, Qi)
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "Qi replacing first vector with an all-ones vector (normalized)")
-	if pid > 0 {
-		ct := crypto.CZeros(cryptoParams, 1)[0]
-		ct = crypto.AddConst(cryptoParams, ct, 1.0)
+// 	log.LLvl1(time.Now().Format(time.RFC3339), "Qi replacing first vector with an all-ones vector (normalized)")
+// 	if pid > 0 {
+// 		ct := crypto.CZeros(cryptoParams, 1)[0]
+// 		ct = crypto.AddConst(cryptoParams, ct, 1.0)
 
-		QiFirst := make(crypto.CipherVector, ((nrowsAll[pid]-1)/slots)+1)
-		for i := range QiFirst {
-			nElem := slots
-			if i == len(QiFirst)-1 {
-				nElem = nrowsAll[pid] - (len(QiFirst)-1)*slots
-			}
-			QiFirst[i] = crypto.MaskTrunc(cryptoParams, ct, nElem)
-		}
+// 		QiFirst := make(crypto.CipherVector, ((nrowsAll[pid]-1)/slots)+1)
+// 		for i := range QiFirst {
+// 			nElem := slots
+// 			if i == len(QiFirst)-1 {
+// 				nElem = nrowsAll[pid] - (len(QiFirst)-1)*slots
+// 			}
+// 			QiFirst[i] = crypto.MaskTrunc(cryptoParams, ct, nElem)
+// 		}
 
-		Qi[0] = QiFirst
-		Qi, _ = crypto.FlattenLevels(cryptoParams, Qi)
-	}
+// 		Qi[0] = QiFirst
+// 		Qi, _ = crypto.FlattenLevels(cryptoParams, Qi)
+// 	}
 
-	if debug && pid > 0 {
-		for party := 1; party <= ast.general.config.NumMainParties; party++ {
-			SaveMatrixToFile(cryptoParams, mpcObj, Qi, nrowsAll[party], party, ast.general.CachePath("Qi.txt"))
-		}
-	}
+// 	if debug && pid > 0 {
+// 		for party := 1; party <= ast.general.config.NumMainParties; party++ {
+// 			SaveMatrixToFile(cryptoParams, mpcObj, Qi, nrowsAll[party], party, ast.general.CachePath("Qi.txt"))
+// 		}
+// 	}
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "AssertSync")
-	mpcObj.AssertSync()
+// 	log.LLvl1(time.Now().Format(time.RFC3339), "AssertSync")
+// 	mpcObj.AssertSync()
 
-	// Compute (I - Qi * Qi') * Qpc
-	fn := func(cp *crypto.CryptoParams, a crypto.CipherVector,
-		B crypto.CipherMatrix, j int) crypto.CipherVector {
-		return crypto.CMult(cp, a, B[j])
-	}
+// 	// Compute (I - Qi * Qi') * Qpc
+// 	fn := func(cp *crypto.CryptoParams, a crypto.CipherVector,
+// 		B crypto.CipherMatrix, j int) crypto.CipherVector {
+// 		return crypto.CMult(cp, a, B[j])
+// 	}
 
-	Qpcmi := make(crypto.CipherMatrix, npc)
+// 	Qpcmi := make(crypto.CipherMatrix, npc)
 
-	if pid > 0 && Qpc != nil {
+// 	if pid > 0 && Qpc != nil {
 
-		Qpcmi = DCMatMulAAtB(cryptoParams, mpcObj, Qi, Qpc, nrowsAll, npc, fn)
+// 		Qpcmi = DCMatMulAAtB(cryptoParams, mpcObj, Qi, Qpc, nrowsAll, npc, fn)
 
-		if debug {
-			for party := 1; party <= ast.general.config.NumMainParties; party++ {
-				SaveMatrixToFile(cryptoParams, mpcObj, Qpc, nrowsAll[party], party, ast.general.CachePath("Qpc_assoc.txt"))
-				SaveMatrixToFile(cryptoParams, mpcObj, Qpcmi, nrowsAll[party], party, ast.general.CachePath("Qpcmi_mult.txt"))
-			}
-		}
+// 		if debug {
+// 			for party := 1; party <= ast.general.config.NumMainParties; party++ {
+// 				SaveMatrixToFile(cryptoParams, mpcObj, Qpc, nrowsAll[party], party, ast.general.CachePath("Qpc_assoc.txt"))
+// 				SaveMatrixToFile(cryptoParams, mpcObj, Qpcmi, nrowsAll[party], party, ast.general.CachePath("Qpcmi_mult.txt"))
+// 			}
+// 		}
 
-		for c := range Qpcmi {
-			Qpcmi[c] = crypto.CMultConstRescale(cryptoParams, Qpcmi[c], nrowsTotalInv, true)
-			Qpcmi[c] = crypto.CSub(cryptoParams, Qpc[c], Qpcmi[c])
-		}
+// 		for c := range Qpcmi {
+// 			Qpcmi[c] = crypto.CMultConstRescale(cryptoParams, Qpcmi[c], nrowsTotalInv, true)
+// 			Qpcmi[c] = crypto.CSub(cryptoParams, Qpc[c], Qpcmi[c])
+// 		}
 
-		Qpcmi = mpcObj.Network.BootstrapMatAll(cryptoParams, Qpcmi)
-	}
+// 		Qpcmi = mpcObj.Network.BootstrapMatAll(cryptoParams, Qpcmi)
+// 	}
 
-	if debug && pid > 0 {
-		for party := 1; party <= ast.general.config.NumMainParties; party++ {
-			SaveMatrixToFile(cryptoParams, mpcObj, Qpcmi, nrowsAll[party], party, ast.general.CachePath("Qpcmi_before_QR.txt"))
-		}
-	}
+// 	if debug && pid > 0 {
+// 		for party := 1; party <= ast.general.config.NumMainParties; party++ {
+// 			SaveMatrixToFile(cryptoParams, mpcObj, Qpcmi, nrowsAll[party], party, ast.general.CachePath("Qpcmi_before_QR.txt"))
+// 		}
+// 	}
 
-	// QR factorize Qpcmi
-	if Qpc != nil {
-		start = time.Now()
+// 	// QR factorize Qpcmi
+// 	if Qpc != nil {
+// 		start = time.Now()
 
-		Qpcmi = NetDQRenc(cryptoParams, mpcObj, Qpcmi, nrowsAll)
+// 		Qpcmi = NetDQRenc(cryptoParams, mpcObj, Qpcmi, nrowsAll)
 
-		log.LLvl1(time.Now().Format(time.RFC3339), "QR(Qpcmi) time: ", time.Since(start))
-		log.LLvl1(time.Now().Format(time.RFC3339), "QR(Qpcmi) dimensions: r,c :", len(Qi[0]), len(Qi))
+// 		log.LLvl1(time.Now().Format(time.RFC3339), "QR(Qpcmi) time: ", time.Since(start))
+// 		log.LLvl1(time.Now().Format(time.RFC3339), "QR(Qpcmi) dimensions: r,c :", len(Qi[0]), len(Qi))
 
-		Qpcmi = mpcObj.Network.BootstrapMatAll(cryptoParams, Qpcmi)
-	}
+// 		Qpcmi = mpcObj.Network.BootstrapMatAll(cryptoParams, Qpcmi)
+// 	}
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "AssertSync")
-	mpcObj.AssertSync()
+// 	log.LLvl1(time.Now().Format(time.RFC3339), "AssertSync")
+// 	mpcObj.AssertSync()
 
-	if debug && pid > 0 {
-		for party := 1; party <= ast.general.config.NumMainParties; party++ {
-			SaveMatrixToFile(cryptoParams, mpcObj, Qpcmi, nrowsAll[party], party, ast.general.CachePath("Qpcmi.txt"))
-		}
-	}
+// 	if debug && pid > 0 {
+// 		for party := 1; party <= ast.general.config.NumMainParties; party++ {
+// 			SaveMatrixToFile(cryptoParams, mpcObj, Qpcmi, nrowsAll[party], party, ast.general.CachePath("Qpcmi.txt"))
+// 		}
+// 	}
 
-	var Q crypto.CipherMatrix
+// 	var Q crypto.CipherMatrix
 
-	if pid > 0 {
-		// Concatenate Qi and Qpcmi
-		if Qpc == nil {
-			Q = Qi
-		} else {
-			Q = make(crypto.CipherMatrix, ncov+npc)
-			for c := range Qi {
-				Q[c] = Qi[c]
-			}
-			for c := range Qpcmi {
-				Q[ncov+c] = Qpcmi[c]
-			}
-		}
-	}
+// 	if pid > 0 {
+// 		// Concatenate Qi and Qpcmi
+// 		if Qpc == nil {
+// 			Q = Qi
+// 		} else {
+// 			Q = make(crypto.CipherMatrix, ncov+npc)
+// 			for c := range Qi {
+// 				Q[c] = Qi[c]
+// 			}
+// 			for c := range Qpcmi {
+// 				Q[ncov+c] = Qpcmi[c]
+// 			}
+// 		}
+// 	}
 
-	return Q
-}
+// 	return Q
+// }
 
 func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix) (matOut crypto.CipherMatrix, dosageSum, dosageSqSum []float64, filtOut []bool) {
 	cryptoParams := ast.general.cps
@@ -600,9 +598,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {
 		// Note: if covAllOnes = true, then sx = sy = 0. Skip all calculations involving sx and sy.
 
 		concat := make(crypto.CipherMatrix, len(Q)+2) // remove all ones
-		for i := 0; i < len(Q); i++ {
-			concat[i] = Q[i]
-		}
+		copy(concat, Q)
 		concat[len(Q)] = omu
 		concat[len(Q)+1] = ynew[0]
 

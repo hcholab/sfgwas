@@ -3,8 +3,8 @@ package mpc
 import (
 	// "bufio"
 
-	"github.com/hhcho/sfgwas-private/crypto"
 	"github.com/ldsec/lattigo/v2/drlwe"
+	"github.com/simonjmendelsohn/sfgwas/crypto"
 
 	"github.com/ldsec/lattigo/v2/ckks"
 	"github.com/ldsec/lattigo/v2/ring"
@@ -75,9 +75,9 @@ func (netObj *Network) AggregateDecryptSharesMat(poly [][]dckks.PCKSShare, outLe
 	return
 }
 
-//level := uint64(len(share1[0].Coeffs)) - 1
-//pcks.dckksContext.RingQ.AddLvl(level, share1[0], share2[0], shareOut[0])
-//pcks.dckksContext.RingQ.AddLvl(level, share1[1], share2[1], shareOut[1])
+// level := uint64(len(share1[0].Coeffs)) - 1
+// pcks.dckksContext.RingQ.AddLvl(level, share1[0], share2[0], shareOut[0])
+// pcks.dckksContext.RingQ.AddLvl(level, share1[1], share2[1], shareOut[1])
 func (netObj *Network) AggregateDecryptShares(poly *dckks.PCKSShare, outLevel int) (out *dckks.PCKSShare) {
 	out = new(dckks.PCKSShare)
 
