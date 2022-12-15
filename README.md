@@ -5,14 +5,17 @@ This fork of the sfgwas package aims to add more features in addition to compati
 Software for secure and federated genome-wide association studies, as described in:
 
 **Secure and Federated Genome-Wide Association Studies for Biobank-Scale Datasets**\
-Hyunghoon Cho, David Froelicher, Manaswitha Edupalli, Apostolos Pyrgelis, Juan R. Troncoso-Pastoriza, Jean-Pierre Hubaux, Bonnie Berger\
+Hyunghoon Cho, David Froelicher, Jeffrey Chen, Manaswitha Edupalli, Apostolos Pyrgelis, Juan R. Troncoso-Pastoriza, Jean-Pierre Hubaux, Bonnie Berger\
 Under review, 2022
+
+This repository provides the code for PCA-based association analysis. For LMM-based GWAS, see [here](https://github.com/hhcho/sfgwas-lmm). We are working on providing both workflows in one package for convenience.
+
 
 ## Installation
 
 ### Dependencies
 
-SF-GWAS requires that `go`, `python3`, and `plink2` are available in the exec path in shell. Here are the links to installing these dependencies:
+SF-GWAS requires that `go`, `python3`, and `plink2` are available in the exec path in shell. Here are the links for installation:
 
 - [Go](https://go.dev/doc/install) (>=1.18.3)
 - Python (>=3.9.2) with [NumPy](https://numpy.org/install/)
