@@ -24,7 +24,7 @@ num_columns = 1773
 iter_per_eigenval = 1
 num_pcs_to_remove = 2
 num_oversampling = 2
-num_power_iters = 10
+num_power_iters = 2
 
 ## Networking parameters
 # Party with a smaller ID listens for connection
