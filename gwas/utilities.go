@@ -113,14 +113,18 @@ func readFilterFromFile(filename string, n int, isBinary bool) []bool {
 }
 
 func writeFilterToFile(filename string, filter []bool, isBinary bool) {
+	fmt.Println("Line 116; inside writeFilterToFile") // TESTING
+	fmt.Println("filename: ", filename)               // TESTING
+	fmt.Println("filter: ", filter)                   // TESTING
+	fmt.Println("isBinary: ", isBinary)               // TESTING
+
 	file, err := os.Create(filename)
 	if err != nil {
 		panic(err)
 	}
 	defer file.Close()
-	if err != nil {
-		log.Fatal(err)
-	}
+
+	fmt.Println("Line 127; about to create bufio writer") // TESTING
 
 	writer := bufio.NewWriter(file)
 
@@ -145,12 +149,26 @@ func writeFilterToFile(filename string, filter []bool, isBinary bool) {
 	}
 
 	writer.Flush()
+
+	fmt.Println("Line 153; finished writeFilterToFile") // TESTING
 }
 
 func FilterMatrixFilePgen(pgenPrefix string, nrows, ncols int, rowFiltFile, colNamesFile string, colStartPos int, colFilt []bool, outputFile string) {
 	colFiltFile := outputFile + ".colFilter.bin"
 
+	fmt.Println("Line 159; inside FilterMatrixFilePgen", pgenPrefix) // TESTING
+	fmt.Println("pgenPrefix: ", pgenPrefix)                          // TESTING
+	fmt.Println("nrows: ", nrows)                                    // TESTING
+	fmt.Println("ncols: ", ncols)                                    // TESTING
+	fmt.Println("rowFiltFile: ", rowFiltFile)                        // TESTING
+	fmt.Println("colNamesFile: ", colNamesFile)                      // TESTING
+	fmt.Println("colStartPos: ", colStartPos)                        // TESTING
+	fmt.Println("colFilt: ", colFilt)                                // TESTING
+	fmt.Println("outputFile: ", outputFile)                          // TESTING
+
 	writeFilterToFile(colFiltFile, colFilt, true)
+
+	fmt.Println("Line 160; finished writeFilterToFile") // TESTING
 
 	cmd := exec.Command("/bin/sh", "scripts/filterMatrixPgen.sh", pgenPrefix, strconv.Itoa(nrows), strconv.Itoa(ncols), rowFiltFile, colFiltFile, colNamesFile, strconv.Itoa(colStartPos), outputFile)
 	cout, e := cmd.CombinedOutput()

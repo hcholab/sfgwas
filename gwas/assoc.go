@@ -372,7 +372,12 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix) (matOut cryp
 					threadId := <-threadPool
 					wg.Add(1)
 
+					log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Line 375; about to enter go func")) // TESTING
+
 					go func(threadId, batchIndex, startIndex, idx, counter, shift, outShift int) {
+						// log all parameters
+						log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("line 379; threadId: %d, batchIndex: %d, startIndex: %d, idx: %d, counter: %d, shift: %d, outShift: %d", threadId, batchIndex, startIndex, idx, counter, shift, outShift)) // TESTING
+
 						defer wg.Done()
 
 						start := time.Now()
@@ -380,6 +385,9 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix) (matOut cryp
 
 						batchFilt := snpFilt[startIndex : idx+1]
 						gfsTempFile := ast.general.CachePath(fmt.Sprintf("pgen_gfs.%d.tmp", threadId))
+
+						log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Line 389; about to enter FilterMatrixFilePgen")) // TESTING
+
 						FilterMatrixFilePgen(pgenFile, numInd, counter, ast.general.config.SampleKeepFile, ast.general.config.SnpIdsFile, shift+startIndex, batchFilt, gfsTempFile)
 
 						X := NewGenoFileStream(gfsTempFile, uint64(numInd), uint64(counter), true)
@@ -393,7 +401,7 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix) (matOut cryp
 							filtOut[outShift+c] = true
 						}
 
-						log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("MatMult: block %d/%d, batch %d/%d, thread %d finished,", b+1, numBlocks, batchIndex, nbatch, threadId), "elapsed time", time.Since(start))
+						log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("MatMult: block %d/%d, batch %d/%d, thread %d finished,", b+1, numBlocks, batchIndex+1, nbatch, threadId), "elapsed time", time.Since(start))
 
 						// Return thread to pool
 						threadPool <- threadId
