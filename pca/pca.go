@@ -302,6 +302,8 @@ func (prot *ProtocolInfo) DistributedPCA(X, XT *FileStream, Xcache, XTcache stri
 		}
 
 		invN := 1.0 / float64(totRows)
+
+		// consider making similar change as gwas/pca if using more than 30 fracbits
 		sx.MulScalar(rtype.FromFloat64(invN, fracBits)) // 2*fracBits or fracBits?
 		sx2.MulScalar(rtype.FromFloat64(invN, fracBits))
 	}
