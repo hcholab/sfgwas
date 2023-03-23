@@ -1,0 +1,9 @@
+## Data files: none for party 0
+
+## Output and cache paths
+output_dir = "out/party0"
+cache_dir = "cache/party0"
+
+## Computational paramters
+local_num_threads = 12
+memory_limit = 128000000000

@@ -1,0 +1,15 @@
+## Data files
+geno_binary_file_prefix = "for_sfgwas/lung_split_2Inds/geno_party2"
+geno_num_blocks = 8
+geno_block_size_file = "for_sfgwas/lung_split/geno_party2.blockSizes.txt"
+pheno_file = "for_sfgwas/lung_split_2Inds/pheno_party2.txt"
+covar_file = "for_sfgwas/lung_split_2Inds/cov_party2.txt"
+snp_position_file = "for_sfgwas/lung/pos.txt"
+
+## Output and cache paths
+output_dir = "out/party2"
+cache_dir = "cache/party2"
+
+## Computational paramters
+local_num_threads = 12
+memory_limit = 128000000000
