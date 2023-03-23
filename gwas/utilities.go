@@ -350,6 +350,9 @@ func LoadMatrixFromFile(filename string, delim rune) *mat.Dense {
 	c.Comma = delim
 	text, err := c.ReadAll()
 	if err != nil {
+		if delim == '\t' {
+			return LoadMatrixFromFile(filename, ' ')
+		}
 		panic(err)
 	}
 
@@ -362,6 +365,9 @@ func LoadMatrixFromFile(filename string, delim rune) *mat.Dense {
 		for j := 0; j < columns; j++ {
 			data[i*columns+j], err = strconv.ParseFloat(text[i][j], 64)
 			if err != nil {
+				if delim == '\t' {
+					return LoadMatrixFromFile(filename, ' ')
+				}
 				panic(err)
 			}
 		}
