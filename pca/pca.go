@@ -130,7 +130,7 @@ func InitializePCAProtocol(config *Config, pid int, mpcOnly bool) (pcaProt *Prot
 }
 
 func (prot *ProtocolInfo) PCA() {
-	log.LLvl1(time.Now().Format(time.RFC3339), "Starting PCA protocol")
+	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: Starting Principal Component Analysis")
 
 	mpc := prot.mpcObj[0]
 	pid := mpc.GetPid()
@@ -229,7 +229,7 @@ func (prot *ProtocolInfo) DistributedPCA(X, XT *FileStream, Xcache, XTcache stri
 
 	// Preprocess X
 	if pid > 0 {
-		log.LLvl1(time.Now().Format(time.RFC3339), "Preprocessing X")
+		log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Preprocessing X")
 		MatMult4StreamPreprocess(cryptoParams, X, 5, Xcache)
 		MatMult4StreamPreprocess(cryptoParams, XT, 5, XTcache)
 	}
@@ -404,7 +404,7 @@ func (prot *ProtocolInfo) DistributedPCA(X, XT *FileStream, Xcache, XTcache stri
 
 	// Power iteration
 	for it := itStart; it < nPowerIter; it++ {
-		log.LLvl1(time.Now().Format(time.RFC3339), "Power iteration iter ", it+1, "/", nPowerIter)
+		log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Power iteration iter ", it+1, "/", nPowerIter)
 
 		// Compute Q*X', row-based encoding
 		if pid > 0 {
@@ -451,7 +451,7 @@ func (prot *ProtocolInfo) DistributedPCA(X, XT *FileStream, Xcache, XTcache stri
 	// TODO: be careful of the increasing data range
 	if pid > 0 {
 
-		log.LLvl1(time.Now().Format(time.RFC3339), "Computing covariance matrix")
+		log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Computing covariance matrix")
 
 		nct := ((kp*kp)-1)/slots + 1
 		Zloc := crypto.CZeros(cryptoParams, nct)
@@ -494,7 +494,7 @@ func (prot *ProtocolInfo) DistributedPCA(X, XT *FileStream, Xcache, XTcache stri
 		}
 	}
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "Eigen decomposition")
+	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Eigen decomposition")
 
 	// Eigen decomposition
 	Vss, L := mpcObj.EigenDecomp(Zmat)
@@ -519,7 +519,7 @@ func (prot *ProtocolInfo) DistributedPCA(X, XT *FileStream, Xcache, XTcache stri
 
 	Qpc := crypto.CZeroMat(cryptoParams, len(Q[0]), npc)
 	if pid > 0 {
-		log.LLvl1(time.Now().Format(time.RFC3339), "Extract PC subspace")
+		log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Extract PC subspace")
 
 		// Extract local PC subspace by computing V*Q (npc by numInd)
 		for r := range V {

@@ -78,6 +78,7 @@ func (ast *AssocTest) computeCombinedQV2(C crypto.PlainMatrix, Qpc crypto.Cipher
 		nrowsTotal += nrowsAll[i]
 	}
 
+	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Starting QR Factorization")
 	log.LLvl1(time.Now().Format(time.RFC3339), "Starting QR: C numCols", len(C))
 
 	CEnc := crypto.EncryptPlaintextMatrix(cryptoParams, C)
@@ -328,7 +329,7 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix) (matOut cryp
 
 	} else {
 
-		log.LLvl1(time.Now().Format(time.RFC3339), "MatMult: block", b+1, "/", numBlocks, "starting")
+		log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: MatMult: block", b+1, "/", numBlocks, "starting")
 
 		filtOut = make([]bool, numCtx*slots)
 
@@ -605,7 +606,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {
 
 		filtOut := make([][]bool, numBlocks)
 
-		log.LLvl1(time.Now().Format(time.RFC3339), "Multiplication with genotype matrix started")
+		log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Starting Multiplication with Genotype Matrix")
 
 		sxBlocks := make([]crypto.CipherMatrix, numBlocks)
 		sxxBlocks := make([]crypto.CipherMatrix, numBlocks)

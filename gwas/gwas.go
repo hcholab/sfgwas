@@ -289,7 +289,7 @@ func (g *ProtocolInfo) Phase1() {
 
 	net.ResetNetworkLog()
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "Starting QC")
+	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: Starting Quality Control")
 
 	filterParams := InitFilteringSettings(g.config.MafLB, g.config.HweUB, g.config.SnpMissUB, g.config.IndMissUB, g.config.HetLB, g.config.HetUB)
 	qc := g.InitQC(filterParams)
@@ -321,7 +321,7 @@ func (g *ProtocolInfo) Phase2() crypto.CipherMatrix {
 
 	net.ResetNetworkLog()
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "Starting PCA")
+	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: Starting Principal Component Analysis")
 
 	var Qpca crypto.CipherMatrix
 	pcaCacheFile := g.CachePath("Qpc.txt")
@@ -354,7 +354,7 @@ func (g *ProtocolInfo) Phase2() crypto.CipherMatrix {
 
 	}
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "Finished PCA")
+	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Finished PCA")
 
 	net.PrintNetworkLog()
 
@@ -366,7 +366,7 @@ func (g *ProtocolInfo) Phase3(Qpca crypto.CipherMatrix) {
 
 	net.ResetNetworkLog()
 
-	log.LLvl1(time.Now().Format(time.RFC3339), "Starting association tests")
+	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: Starting Association Tests")
 
 	assoc, outFilter := g.ComputeAssocStatistics(Qpca)
 
