@@ -82,12 +82,9 @@ func UnmarshalCM(cryptoParams *CryptoParams, r, c int, sbytes, ctbytes []byte) C
 func SaveCipherMatrixToFile(cps *CryptoParams, cm CipherMatrix, filename string) {
 	file, err := os.Create(filename)
 	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
-	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	writer := bufio.NewWriter(file)
 
@@ -116,12 +113,9 @@ func SaveCipherMatrixToFile(cps *CryptoParams, cm CipherMatrix, filename string)
 func LoadCipherMatrixFromFile(cps *CryptoParams, filename string) CipherMatrix {
 	file, err := os.Open(filename)
 	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
-	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	reader := bufio.NewReader(file)
 

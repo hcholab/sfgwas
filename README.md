@@ -10,7 +10,6 @@ Under review, 2022
 
 This repository provides the code for PCA-based association analysis. For LMM-based GWAS, see [here](https://github.com/hhcho/sfgwas-lmm). We are working on providing both workflows in one package for convenience.
 
-
 ## Installation
 
 ### Dependencies

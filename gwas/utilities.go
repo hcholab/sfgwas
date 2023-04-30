@@ -34,12 +34,9 @@ func ReadGenoStatsFromFile(filename string, m int) (ac, gc [][]uint32, miss []ui
 
 	file, err := os.Open(filename)
 	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
-	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	reader := bufio.NewReader(file)
 
@@ -186,12 +183,9 @@ func MergeBlockFiles(inputBlockFilePrefix string, nrows int, ncolsPerBlock []int
 	// Write dimensions to file
 	file, err := os.Create(datFile)
 	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
-	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	writer := bufio.NewWriter(file)
 	for _, v := range ncolsPerBlock {
@@ -457,12 +451,9 @@ func SaveMatrixToFile(cps *crypto.CryptoParams, mpcObj *mpc.MPC, cm crypto.Ciphe
 func SaveFloatMatrixToFile(filename string, x [][]float64) {
 	file, err := os.Create(filename)
 	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
-	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	writer := bufio.NewWriter(file)
 
@@ -482,12 +473,9 @@ func SaveFloatMatrixToFile(filename string, x [][]float64) {
 func SaveFloatVectorToFile(filename string, x []float64) {
 	file, err := os.Create(filename)
 	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
-	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	writer := bufio.NewWriter(file)
 
@@ -501,12 +489,9 @@ func SaveFloatVectorToFile(filename string, x []float64) {
 func LoadFloatVectorFromFile(filename string, n int) []float64 {
 	file, err := os.Open(filename)
 	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
-	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	reader := bufio.NewReader(file)
 
@@ -530,12 +515,9 @@ func LoadFloatVectorFromFile(filename string, n int) []float64 {
 func SaveIntVectorToFile(filename string, x []int) {
 	file, err := os.Create(filename)
 	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
-	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	writer := bufio.NewWriter(file)
 
