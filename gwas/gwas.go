@@ -15,8 +15,8 @@ import (
 
 	"github.com/ldsec/lattigo/v2/ckks"
 
-	"github.com/simonjmendelsohn/sfgwas/crypto"
-	"github.com/simonjmendelsohn/sfgwas/mpc"
+	"github.com/hcholab/sfgwas/crypto"
+	"github.com/hcholab/sfgwas/mpc"
 	"gonum.org/v1/gonum/mat"
 )
 

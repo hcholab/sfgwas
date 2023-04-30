@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hcholab/sfgwas/crypto"
+	"github.com/hcholab/sfgwas/general"
 	"github.com/ldsec/lattigo/v2/ckks"
-	"github.com/simonjmendelsohn/sfgwas/crypto"
-	"github.com/simonjmendelsohn/sfgwas/general"
 	"go.dedis.ch/onet/v3/log"
 )
 

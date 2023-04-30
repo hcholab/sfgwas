@@ -4,9 +4,9 @@ import (
 	"encoding/binary"
 	"time"
 
+	"github.com/hcholab/sfgwas/crypto"
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/ldsec/lattigo/v2/ring"
-	"github.com/simonjmendelsohn/sfgwas/crypto"
 	"go.dedis.ch/onet/v3/log"
 )
 

@@ -11,7 +11,7 @@ import (
 	"github.com/ldsec/lattigo/v2/ckks"
 	"go.dedis.ch/onet/v3/log"
 
-	"github.com/simonjmendelsohn/sfgwas/crypto"
+	"github.com/hcholab/sfgwas/crypto"
 
 	"gonum.org/v1/gonum/mat"
 )

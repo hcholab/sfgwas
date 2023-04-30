@@ -7,11 +7,11 @@ import (
 	"sync"
 
 	"github.com/aead/chacha20/chacha"
+	"github.com/hcholab/sfgwas/crypto"
 	"github.com/hhcho/frand"
 	"github.com/ldsec/lattigo/v2/dckks"
 	"github.com/ldsec/lattigo/v2/ring"
 	"github.com/ldsec/lattigo/v2/utils"
-	"github.com/simonjmendelsohn/sfgwas/crypto"
 	"go.dedis.ch/onet/v3/log"
 
 	"github.com/ldsec/lattigo/v2/ckks"

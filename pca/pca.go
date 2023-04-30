@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/hcholab/sfgwas/crypto"
+	"github.com/hcholab/sfgwas/general"
+	"github.com/hcholab/sfgwas/mpc"
 	mpc_core "github.com/hhcho/mpc-core"
 	"github.com/ldsec/lattigo/v2/ckks"
-	"github.com/simonjmendelsohn/sfgwas/crypto"
-	"github.com/simonjmendelsohn/sfgwas/general"
-	"github.com/simonjmendelsohn/sfgwas/mpc"
 	"go.dedis.ch/onet/v3/log"
 )
 

@@ -1,4 +1,4 @@
-module github.com/simonjmendelsohn/sfgwas
+module github.com/hcholab/sfgwas
 
 go 1.18
 

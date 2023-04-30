@@ -6,11 +6,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hcholab/sfgwas/crypto"
 	mpc_core "github.com/hhcho/mpc-core"
-	"github.com/simonjmendelsohn/sfgwas/crypto"
 
+	"github.com/hcholab/sfgwas/mpc"
 	"github.com/ldsec/lattigo/v2/ckks"
-	"github.com/simonjmendelsohn/sfgwas/mpc"
 	"go.dedis.ch/onet/v3/log"
 
 	"gonum.org/v1/gonum/mat"
