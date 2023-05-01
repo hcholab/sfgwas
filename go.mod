@@ -44,6 +44,4 @@ require (
 	rsc.io/goversion v1.2.0 // indirect
 )
 
-replace github.com/ldsec/lattigo/v2 => ../lattigo
-
-replace github.com/hhcho/mpc-core => ../mpc-core
+replace github.com/ldsec/lattigo/v2 => github.com/hcholab/lattigo/v2 v2.1.2-0.20220628190737-bde274261547
