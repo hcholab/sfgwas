@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hhcho/sfgwas-private/crypto"
-	"github.com/hhcho/sfgwas-private/mpc"
+	"github.com/hcholab/sfgwas/crypto"
+	"github.com/hcholab/sfgwas/mpc"
 	"gonum.org/v1/gonum/mat"
 )
 
@@ -33,10 +33,10 @@ func ReadGenoStatsFromFile(filename string, m int) (ac, gc [][]uint32, miss []ui
 	nstats := 6
 
 	file, err := os.Open(filename)
-	defer file.Close()
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	reader := bufio.NewReader(file)
 
@@ -70,6 +70,9 @@ func ReadGenoStatsFromFile(filename string, m int) (ac, gc [][]uint32, miss []ui
 
 func readFilterFromFile(filename string, n int, isBinary bool) []bool {
 	file, err := os.Open(filename)
+	if err != nil {
+		panic(err)
+	}
 	defer file.Close()
 	if err != nil {
 		log.Fatal(err)
@@ -108,10 +111,10 @@ func readFilterFromFile(filename string, n int, isBinary bool) []bool {
 
 func writeFilterToFile(filename string, filter []bool, isBinary bool) {
 	file, err := os.Create(filename)
-	defer file.Close()
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
+	defer file.Close()
 
 	writer := bufio.NewWriter(file)
 
@@ -140,7 +143,6 @@ func writeFilterToFile(filename string, filter []bool, isBinary bool) {
 
 func FilterMatrixFilePgen(pgenPrefix string, nrows, ncols int, rowFiltFile, colNamesFile string, colStartPos int, colFilt []bool, outputFile string) {
 	colFiltFile := outputFile + ".colFilter.bin"
-
 	writeFilterToFile(colFiltFile, colFilt, true)
 
 	cmd := exec.Command("/bin/sh", "scripts/filterMatrixPgen.sh", pgenPrefix, strconv.Itoa(nrows), strconv.Itoa(ncols), rowFiltFile, colFiltFile, colNamesFile, strconv.Itoa(colStartPos), outputFile)
@@ -167,7 +169,7 @@ func FilterMatrixFile(inputFile string, nrows, ncols int, rowFilt, colFilt []boo
 }
 
 func TransposeMatrixFile(inputFile string, nrows, ncols int, outputFile string) {
-	cmd := exec.Command("/bin/sh", "scripts/transposeMatrix.sh", inputFile, strconv.Itoa(nrows), strconv.Itoa(ncols), outputFile)
+	cmd := exec.Command("/bin/sh", "scripts/transposeMatrix.sh", inputFile, strconv.Itoa(nrows), strconv.Itoa(ncols), outputFile, "int8")
 	cout, e := cmd.CombinedOutput()
 	fmt.Print(string(cout))
 	if e != nil {
@@ -180,10 +182,10 @@ func MergeBlockFiles(inputBlockFilePrefix string, nrows int, ncolsPerBlock []int
 
 	// Write dimensions to file
 	file, err := os.Create(datFile)
-	defer file.Close()
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	writer := bufio.NewWriter(file)
 	for _, v := range ncolsPerBlock {
@@ -199,10 +201,11 @@ func MergeBlockFiles(inputBlockFilePrefix string, nrows int, ncolsPerBlock []int
 	}
 }
 
-func matPrint(X mat.Matrix) {
-	fa := mat.Formatted(X, mat.Prefix(""), mat.Squeeze())
-	fmt.Printf("%v\n", fa)
-}
+//	func matPrint(X mat.Matrix) {
+//		fa := mat.Formatted(X, mat.Prefix(""), mat.Squeeze())
+//		fmt.Printf("%v\n", fa)
+//	}
+
 func Max(x, y int) int {
 	if x <= y {
 		return y
@@ -273,6 +276,9 @@ func LoadCacheFromFile(cps *crypto.CryptoParams, filename string) crypto.CipherM
 	c := csv.NewReader(f)
 	c.Comma = delim
 	text, err := c.ReadAll()
+	if err != nil {
+		panic(err)
+	}
 
 	columns := c.FieldsPerRecord
 	lines := len(text)
@@ -284,6 +290,9 @@ func LoadCacheFromFile(cps *crypto.CryptoParams, filename string) crypto.CipherM
 
 		for j := 0; j < columns; j++ {
 			data[i][j], err = strconv.ParseFloat(text[i][j], 64)
+			if err != nil {
+				panic(err)
+			}
 		}
 	}
 
@@ -302,6 +311,9 @@ func LoadMatrixFromFileFloat(filename string, delim rune) [][]float64 {
 	c := csv.NewReader(f)
 	c.Comma = delim
 	text, err := c.ReadAll()
+	if err != nil {
+		panic(err)
+	}
 
 	columns := c.FieldsPerRecord
 	lines := len(text)
@@ -311,6 +323,9 @@ func LoadMatrixFromFileFloat(filename string, delim rune) [][]float64 {
 		data[i] = make([]float64, columns)
 		for j := 0; j < columns; j++ {
 			data[i][j], err = strconv.ParseFloat(text[i][j], 64)
+			if err != nil {
+				panic(err)
+			}
 		}
 	}
 
@@ -328,6 +343,12 @@ func LoadMatrixFromFile(filename string, delim rune) *mat.Dense {
 	c := csv.NewReader(f)
 	c.Comma = delim
 	text, err := c.ReadAll()
+	if err != nil {
+		if delim == '\t' {
+			return LoadMatrixFromFile(filename, ' ')
+		}
+		panic(err)
+	}
 
 	columns := c.FieldsPerRecord
 	lines := len(text)
@@ -337,6 +358,12 @@ func LoadMatrixFromFile(filename string, delim rune) *mat.Dense {
 	for i := 0; i < lines; i++ {
 		for j := 0; j < columns; j++ {
 			data[i*columns+j], err = strconv.ParseFloat(text[i][j], 64)
+			if err != nil {
+				if delim == '\t' {
+					return LoadMatrixFromFile(filename, ' ')
+				}
+				panic(err)
+			}
 		}
 	}
 
@@ -354,6 +381,9 @@ func LoadSNPPositionFile(filename string, delim rune) []uint64 {
 	c := csv.NewReader(f)
 	c.Comma = delim
 	text, err := c.ReadAll()
+	if err != nil {
+		panic(err)
+	}
 
 	lines := len(text)
 
@@ -420,10 +450,10 @@ func SaveMatrixToFile(cps *crypto.CryptoParams, mpcObj *mpc.MPC, cm crypto.Ciphe
 
 func SaveFloatMatrixToFile(filename string, x [][]float64) {
 	file, err := os.Create(filename)
-	defer file.Close()
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	writer := bufio.NewWriter(file)
 
@@ -442,10 +472,10 @@ func SaveFloatMatrixToFile(filename string, x [][]float64) {
 
 func SaveFloatVectorToFile(filename string, x []float64) {
 	file, err := os.Create(filename)
-	defer file.Close()
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	writer := bufio.NewWriter(file)
 
@@ -458,10 +488,10 @@ func SaveFloatVectorToFile(filename string, x []float64) {
 
 func LoadFloatVectorFromFile(filename string, n int) []float64 {
 	file, err := os.Open(filename)
-	defer file.Close()
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	reader := bufio.NewReader(file)
 
@@ -484,10 +514,10 @@ func LoadFloatVectorFromFile(filename string, n int) []float64 {
 
 func SaveIntVectorToFile(filename string, x []int) {
 	file, err := os.Create(filename)
-	defer file.Close()
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	writer := bufio.NewWriter(file)
 

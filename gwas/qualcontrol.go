@@ -32,7 +32,7 @@ func (g *ProtocolInfo) InitQC(filterParams *FilterParams) QC {
 	}
 }
 
-//IndividualMissAndHetFilters filters individuals based on missing rate and heterozygosity filter
+// IndividualMissAndHetFilters filters individuals based on missing rate and heterozygosity filter
 func (qc *QC) IndividualMissAndHetFilters() []bool {
 	if qc.general.mpcObj[0].GetPid() == 0 {
 		return make([]bool, 1)
@@ -637,11 +637,9 @@ func (qc *QC) QualityControlProtocolWithPrecomputedGenoStats(useCache bool) {
 	// Update gwasParams
 	qc.general.gwasParams.SetFiltCounts(qc.filtNumInds, qc.filtNumSnps)
 	qc.general.gwasParams.SetSnpFilt(snpFilt)
-
-	return
 }
 
-//QualityControlProtocol (1) applies SNP filters and individual filters to input data, (2) filters input wrt filters
+// QualityControlProtocol (1) applies SNP filters and individual filters to input data, (2) filters input wrt filters
 func (qc *QC) QualityControlProtocol(useCache bool) {
 	mpc := qc.general.mpcObj[0]
 	pid := mpc.GetPid()
@@ -787,8 +785,6 @@ func (qc *QC) QualityControlProtocol(useCache bool) {
 		qc.general.pheno = FilterVec(qc.general.pheno, indFilt)
 		qc.general.cov = FilterMat(qc.general.cov, OnesBool(qc.general.gwasParams.NumCov()), indFilt)
 	}
-
-	return
 }
 
 func FilterMat(X *mat.Dense, colkeep, rowkeep []bool) *mat.Dense {

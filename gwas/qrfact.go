@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hcholab/sfgwas/crypto"
 	mpc_core "github.com/hhcho/mpc-core"
-	"github.com/hhcho/sfgwas-private/crypto"
 
-	"github.com/hhcho/sfgwas-private/mpc"
+	"github.com/hcholab/sfgwas/mpc"
 	"github.com/ldsec/lattigo/v2/ckks"
 	"go.dedis.ch/onet/v3/log"
 
@@ -241,11 +241,11 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 			ncolCurr := ncols - j
 
 			// Compute 2 * v * v^T * Q
-			QSlice := make(crypto.CipherMatrix, 1) //check
-			QSlice = Q[j:]
+			// QSlice := make(crypto.CipherMatrix, 1) //check
+			QSlice := Q[j:]
 
-			vMat := make(crypto.CipherMatrix, 1) //check
-			vMat = crypto.CipherMatrix{vList[j]}
+			// vMat := make(crypto.CipherMatrix, 1) //check
+			vMat := crypto.CipherMatrix{vList[j]}
 
 			fn := func(cp *crypto.CryptoParams, a crypto.CipherVector,
 				B crypto.CipherMatrix, j int) crypto.CipherVector {
@@ -315,7 +315,7 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 	return Q //nil for pid=0
 }
 
-//NetDQRplain returns Q all zeros (or nil) (for pid=0), else returns share of Q for each party
+// NetDQRplain returns Q all zeros (or nil) (for pid=0), else returns share of Q for each party
 func NetDQRplain(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.PlainMatrix, nrowsAll []int) crypto.CipherMatrix {
 	pid := mpcObj.GetPid()
 	ncols := len(A) //column encrypted

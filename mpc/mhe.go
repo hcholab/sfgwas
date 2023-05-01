@@ -7,8 +7,8 @@ import (
 	"sync"
 
 	"github.com/aead/chacha20/chacha"
+	"github.com/hcholab/sfgwas/crypto"
 	"github.com/hhcho/frand"
-	"github.com/hhcho/sfgwas-private/crypto"
 	"github.com/ldsec/lattigo/v2/dckks"
 	"github.com/ldsec/lattigo/v2/ring"
 	"github.com/ldsec/lattigo/v2/utils"
@@ -252,8 +252,6 @@ func (netObj *Network) CollectiveBootstrap(cps *crypto.CryptoParams, ct *ckks.Ci
 	refProtocol.Decrypt(ct, refAgg1)           // Masked decryption
 	refProtocol.Recode(ct, parameters.Scale()) // Masked re-encoding
 	refProtocol.Recrypt(ct, crp, refAgg2)      // Masked re-encryption
-
-	return
 }
 
 func (netObj *Network) CollectiveBootstrapVec(cps *crypto.CryptoParams, cv crypto.CipherVector, sourcePid int) crypto.CipherVector {
@@ -343,7 +341,7 @@ func (netObj *Network) CollectiveBootstrapMat(cps *crypto.CryptoParams, cm crypt
 
 }
 
-//BootstrapMatAll: collective bootstrap for all parties (except 0)
+// BootstrapMatAll: collective bootstrap for all parties (except 0)
 func (netObj *Network) BootstrapMatAll(cps *crypto.CryptoParams, cm crypto.CipherMatrix) crypto.CipherMatrix {
 
 	tmp := make(crypto.CipherMatrix, len(cm))

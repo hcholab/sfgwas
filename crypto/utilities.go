@@ -31,7 +31,7 @@ func Mod(n int, modulus int) int {
 	return n
 }
 
-//MarshalCiphermatrix returns byte array corresponding to ciphertext sizes (int array) and byte array corresponding to marshaling
+// MarshalCiphermatrix returns byte array corresponding to ciphertext sizes (int array) and byte array corresponding to marshaling
 func MarshalCM(cm CipherMatrix) ([]byte, []byte) {
 	cmBytes, ctSizes, err := cm.MarshalBinary()
 	if err != nil {
@@ -55,7 +55,7 @@ func MarshalCM(cm CipherMatrix) ([]byte, []byte) {
 
 }
 
-//MarshalCiphermatrix returns byte array corresponding to ciphertext sizes (int array) and byte array corresponding to marshaling
+// MarshalCiphermatrix returns byte array corresponding to ciphertext sizes (int array) and byte array corresponding to marshaling
 func UnmarshalCM(cryptoParams *CryptoParams, r, c int, sbytes, ctbytes []byte) CipherMatrix {
 	intsize := uint64(8)
 	offset := uint64(0)
@@ -81,10 +81,10 @@ func UnmarshalCM(cryptoParams *CryptoParams, r, c int, sbytes, ctbytes []byte) C
 
 func SaveCipherMatrixToFile(cps *CryptoParams, cm CipherMatrix, filename string) {
 	file, err := os.Create(filename)
-	defer file.Close()
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	writer := bufio.NewWriter(file)
 
@@ -112,10 +112,10 @@ func SaveCipherMatrixToFile(cps *CryptoParams, cm CipherMatrix, filename string)
 
 func LoadCipherMatrixFromFile(cps *CryptoParams, filename string) CipherMatrix {
 	file, err := os.Open(filename)
-	defer file.Close()
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	reader := bufio.NewReader(file)
 
