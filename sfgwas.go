@@ -16,7 +16,7 @@ import (
 // Expects a party ID provided as an environment variable;
 // e.g., run "PID=1 go run sfgwas.go"
 var PID, PID_ERR = strconv.Atoi(os.Getenv("PID"))
-var CONFIG_PATH = "config/pca"
+var CONFIG_PATH = "config/" + getProtocol()
 
 func main() {
 	if CONFIG_PATH == "config/gwas" {
@@ -126,4 +126,23 @@ func RunPCA() {
 	prot.PCA()
 
 	prot.SyncAndTerminate(true)
+}
+
+func getEnv(key, defaultValue string) string {
+	value := os.Getenv(key)
+	if len(value) == 0 {
+		return defaultValue
+	}
+	return value
+}
+
+func getProtocol() string {
+	switch proto := os.Getenv("PROTOCOL"); proto {
+	case "gwas", "pca":
+		return proto
+	case "":
+		return "pca"
+	default:
+		panic("Unknown PROTOCOL: " + proto)
+	}
 }
