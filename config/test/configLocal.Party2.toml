@@ -1,0 +1,9 @@
+shared_keys_path = "example_data/keys"
+
+input_file = "example_data/pca/party2/data.txt"
+
+output_dir = "out/party0"
+cache_dir = "cache/party0"
+
+local_num_threads = 4
+memory_limit = 40000000000

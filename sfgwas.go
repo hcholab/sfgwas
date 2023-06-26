@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 
 	"github.com/BurntSushi/toml"
 	"github.com/hcholab/sfgwas/gwas"
@@ -15,18 +14,18 @@ import (
 
 // Expects a party ID provided as an environment variable;
 // e.g., run "PID=1 go run sfgwas.go"
-var PID, PID_ERR = strconv.Atoi(os.Getenv("PID"))
-var CONFIG_PATH = "config/" + getProtocol()
+// var PID, PID_ERR = strconv.Atoi(os.Getenv("PID"))
+// var CONFIG_PATH = "config/" + getProtocol()
 
-func main() {
-	if CONFIG_PATH == "config/gwas" {
-		RunGWAS()
-	} else if CONFIG_PATH == "config/pca" {
-		RunPCA()
-	} else {
-		panic("Unknown configuration path")
-	}
-}
+// func main() {
+// 	if CONFIG_PATH == "config/gwas" {
+// 		RunGWAS()
+// 	} else if CONFIG_PATH == "config/pca" {
+// 		RunPCA()
+// 	} else {
+// 		panic("Unknown configuration path")
+// 	}
+// }
 
 func InitGWASProtocol(configPath string) *gwas.ProtocolInfo {
 	config := new(gwas.Config)
