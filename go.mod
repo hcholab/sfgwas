@@ -11,6 +11,7 @@ require (
 	github.com/ldsec/unlynx v1.4.3
 	github.com/raulk/go-watchdog v1.3.0
 	go.dedis.ch/onet/v3 v3.2.10
+	golang.org/x/net v0.9.0
 	gonum.org/v1/gonum v0.12.0
 )
 

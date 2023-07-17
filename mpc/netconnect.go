@@ -4,11 +4,14 @@ import (
 	// "bufio"
 
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strconv"
 	"sync"
 	"time"
+
+	"golang.org/x/net/proxy"
 
 	"github.com/aead/chacha20/chacha"
 	"github.com/hhcho/frand"
@@ -179,7 +182,11 @@ func initNetworkForThread(bindingIP string, servers map[string]Server, pid int, 
 			// Assumes that port info in config is given such that port + thread ID does not collide
 			port := strconv.Itoa(portInt + thread)
 
-			conns[other] = Connect(ip, port)
+			socks5Proxy := os.Getenv("SOCKS5_PROXY")
+			if other == 0 {
+				socks5Proxy = ""
+			}
+			conns[other] = Connect(ip, port, socks5Proxy)
 			fmt.Println("Connected to socket, listening to party", other)
 
 		} else { // Act as a server
@@ -270,7 +277,7 @@ func ReadFull(conn *net.Conn, buf []byte) {
 	}
 }
 
-//OpenChannel opens channel at specificed ip address and port and returns channel (server side, connection for client to listen to)
+// OpenChannel opens channel at specificed ip address and port and returns channel (server side, connection for client to listen to)
 func OpenChannel(ip, port string) (net.Conn, net.Listener) {
 	l, err := establishConn(ip, port)
 	checkError(err)
@@ -308,7 +315,7 @@ func listen(l net.Listener) (net.Conn, error) {
 	return c, nil
 }
 
-//CloseChannel closes connection
+// CloseChannel closes connection
 func CloseChannel(conn net.Conn) {
 	err := conn.Close()
 	checkError(err)
@@ -324,20 +331,34 @@ func (netObj *Network) CloseAll() {
 }
 
 // Connect to "server", given the ip address and port
-func Connect(ip, port string) net.Conn {
+func Connect(ip, port, socks5Proxy string) net.Conn {
 	addr := ip + ":" + port
+
+	// Use proxy (tailscale) if SOCKS5_PROXY is set
+	var dialer proxy.Dialer
+	var err error
+	// If SOCKS5_PROXY is set, set up a dialer for our proxy
+	if socks5Proxy != "" {
+		fmt.Println("Using proxy to connect: " + socks5Proxy)
+		dialer, err = proxy.SOCKS5("tcp", socks5Proxy, nil, proxy.Direct)
+		if err != nil {
+			log.Fatalf("Can't connect to the proxy: %v", err)
+		}
+	} else {
+		// If SOCKS5_PROXY is not set, use direct connection
+		fmt.Println("Using direct connection")
+		dialer = proxy.Direct
+	}
 
 	// Re-try connecting to server
 	retrySchedule := make([]time.Duration, 100)
 	for i := range retrySchedule {
-		// retrySchedule[i] = time.Duration((i+1)*5) * time.Second
 		retrySchedule[i] = time.Duration(5) * time.Second
 	}
 
 	var c net.Conn
-	var err error
 	for _, retry := range retrySchedule {
-		c, err = net.Dial("tcp", addr)
+		c, err = dialer.Dial("tcp", addr)
 
 		if err == nil {
 			fmt.Println("Successfully connected to " + addr)
