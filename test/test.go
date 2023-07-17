@@ -132,15 +132,31 @@ func (prot *ProtocolInfo) Test() {
 		encryptedMat, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, testMat)
 		log.LLvl1("Encrypted matrix: ", encryptedMat[0], encryptedMat[1])
 
-		aggregatedMat := prot.mpcObj[0].Network.AggregateCMat(cryptoParams, encryptedMat)
-		log.LLvl1("Aggregated matrix: ", aggregatedMat[0], aggregatedMat[1])
+		// multipliedVector is a crypto.CipherVector, equal to encryptedMat[0] * encryptedMat[1]
+		multipliedVector := crypto.CMult(cryptoParams, encryptedMat[0], encryptedMat[1])
+		log.LLvl1("Multiplied vector: ", multipliedVector)
 
-		decryptedMat := prot.mpcObj[0].Network.CollectiveDecryptMat(cryptoParams, aggregatedMat, 1)
-		log.LLvl1("Decrypted matrix: ", decryptedMat[0], decryptedMat[1])
+		// aggregate
+		aggregatedVector := prot.mpcObj[0].Network.AggregateCVec(cryptoParams, multipliedVector)
+		log.LLvl1("Aggregated vector: ", aggregatedVector)
 
-		vec1 := crypto.DecodeFloatVector(cryptoParams, decryptedMat[0])
-		vec2 := crypto.DecodeFloatVector(cryptoParams, decryptedMat[1])
-		log.LLvl1("Decoded matrix: ", vec1[:2], vec2[:2])
+		// decrypt
+		decryptedVector := prot.mpcObj[0].Network.CollectiveDecryptVec(cryptoParams, aggregatedVector, 1)
+		log.LLvl1("Decrypted vector: ", decryptedVector)
+
+		// decode
+		decodedVector := crypto.DecodeFloatVector(cryptoParams, decryptedVector)
+		log.LLvl1("Decoded vector: ", decodedVector[:2])
+
+		// aggregatedMat := prot.mpcObj[0].Network.AggregateCMat(cryptoParams, encryptedMat)
+		// log.LLvl1("Aggregated matrix: ", aggregatedMat[0], aggregatedMat[1])
+
+		// decryptedMat := prot.mpcObj[0].Network.CollectiveDecryptMat(cryptoParams, aggregatedMat, 1)
+		// log.LLvl1("Decrypted matrix: ", decryptedMat[0], decryptedMat[1])
+
+		// vec1 := crypto.DecodeFloatVector(cryptoParams, decryptedMat[0])
+		// vec2 := crypto.DecodeFloatVector(cryptoParams, decryptedMat[1])
+		// log.LLvl1("Decoded matrix: ", vec1[:2], vec2[:2])
 
 		// MPC test
 		fmt.Println("MPC test")
