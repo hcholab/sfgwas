@@ -4,7 +4,6 @@ import (
 	// "bufio"
 
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"strconv"
@@ -182,11 +181,7 @@ func initNetworkForThread(bindingIP string, servers map[string]Server, pid int, 
 			// Assumes that port info in config is given such that port + thread ID does not collide
 			port := strconv.Itoa(portInt + thread)
 
-			socks5Proxy := os.Getenv("SOCKS5_PROXY")
-			if other == 0 {
-				socks5Proxy = ""
-			}
-			conns[other] = Connect(ip, port, socks5Proxy)
+			conns[other] = Connect(ip, port)
 			fmt.Println("Connected to socket, listening to party", other)
 
 		} else { // Act as a server
@@ -331,24 +326,11 @@ func (netObj *Network) CloseAll() {
 }
 
 // Connect to "server", given the ip address and port
-func Connect(ip, port, socks5Proxy string) net.Conn {
+func Connect(ip, port string) net.Conn {
 	addr := ip + ":" + port
 
-	// Use proxy (tailscale) if SOCKS5_PROXY is set
-	var dialer proxy.Dialer
-	var err error
-	// If SOCKS5_PROXY is set, set up a dialer for our proxy
-	if socks5Proxy != "" {
-		fmt.Println("Using proxy to connect: " + socks5Proxy)
-		dialer, err = proxy.SOCKS5("tcp", socks5Proxy, nil, proxy.Direct)
-		if err != nil {
-			log.Fatalf("Can't connect to the proxy: %v", err)
-		}
-	} else {
-		// If SOCKS5_PROXY is not set, use direct connection
-		fmt.Println("Using direct connection")
-		dialer = proxy.Direct
-	}
+	// Use proxy if environment variables are set
+	dialer := proxy.FromEnvironment()
 
 	// Re-try connecting to server
 	retrySchedule := make([]time.Duration, 100)
@@ -357,6 +339,7 @@ func Connect(ip, port, socks5Proxy string) net.Conn {
 	}
 
 	var c net.Conn
+	var err error
 	for _, retry := range retrySchedule {
 		c, err = dialer.Dial("tcp", addr)
 
