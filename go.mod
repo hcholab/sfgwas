@@ -15,6 +15,8 @@ require (
 	gonum.org/v1/gonum v0.12.0
 )
 
+replace go.dedis.ch/onet/v3 => github.com/hcholab/onet/v3 v3.0.0-20230828232509-90c2e1097481
+
 require (
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/containerd/cgroups v1.1.0 // indirect
