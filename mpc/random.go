@@ -60,6 +60,9 @@ func InitializePRG(pid int, NumParties int, sharedKeysPath string) *Random {
 
 		a, b := sortInt(pid, i)
 		if sharedKeysPath == "" { // Temporary, insecure way of generating a shared seed
+			if a >= 256 || b >= 256 {
+				panic("a or b is out of range")
+			}
 			seed[0] = byte(a)
 			seed[1] = byte(b)
 		} else {
