@@ -1,12 +1,18 @@
+#!/usr/bin/env python3
+
 import numpy as np
 import sys
 import os
 
 pgen_filename_template = sys.argv[1]  # e.g., "gwas_data_chr%d_wgs"
-                                      # Note the formatting string "%d",
-                                      # which will be replaced with "1", "2", ..., "22"
-sample_keep_file = sys.argv[2]  # Samples to keep, in a format expected by PLINK2 with the "--keep" flag
-out_dir = sys.argv[3]  # Output directory, will be created if it does not exist
+# Note the formatting string "%d",
+# which will be replaced with "1", "2", ..., "22"
+
+# Samples to keep, in a format expected by PLINK2 with the "--keep" flag
+sample_keep_file = sys.argv[2]
+
+# Output directory, will be created if it does not exist
+out_dir = sys.argv[3]
 
 os.system(f"mkdir -p {out_dir}")
 
@@ -17,7 +23,9 @@ for chr in range(1, 23):
     pgen_prefix = pgen_filename_template % chr
     out_prefix = os.path.join(out_dir, f"chr{chr}")
 
-    os.system(f"plink2 --threads 1 --pfile {pgen_prefix} --keep {sample_keep_file} --geno-counts --out {out_prefix}")
+    os.system(
+        f"plink2 --threads 1 --pfile {pgen_prefix} --keep {sample_keep_file} --geno-counts --out {out_prefix}"
+    )
 
     print(f"Geno counts computed for chromosome {chr}")
 
@@ -30,7 +38,7 @@ for chr in range(1, 23):
                 first_line = False
                 continue
             tok = line.split("\t")
-            all_file.write("\t".join(tok[4:10]) + "\n")
+            all_file.write("\t".join(tok[5:11]))  # last column already ends with \n
 
     print(f"Geno counts for chromosome {chr} added to: {all_fname}")
 
