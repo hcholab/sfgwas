@@ -1,6 +1,7 @@
 module github.com/hcholab/sfgwas
 
 go 1.21
+toolchain go1.24.1
 
 require (
 	github.com/BurntSushi/toml v1.2.1
@@ -40,9 +41,9 @@ require (
 	go.dedis.ch/kyber/v3 v3.1.0 // indirect
 	go.dedis.ch/protobuf v1.0.11 // indirect
 	go.etcd.io/bbolt v1.3.8 // indirect
-	golang.org/x/crypto v0.31.0 // indirect
+	golang.org/x/crypto v0.35.0 // indirect
 	golang.org/x/exp v0.0.0-20230425010034-47ecfdc1ba53 // indirect
-	golang.org/x/sys v0.28.0 // indirect
+	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	rsc.io/goversion v1.2.0 // indirect
 )
