@@ -527,3 +527,54 @@ func SaveIntVectorToFile(filename string, x []int) {
 
 	writer.Flush()
 }
+
+func loadEncryptedMask(cps *crypto.CryptoParams, filename string) crypto.CipherVector {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+
+	var ncts uint32
+	if err := binary.Read(reader, binary.LittleEndian, &ncts); err != nil {
+		log.Fatal(err)
+	}
+
+	sizesBuf := make([]byte, 8*int(ncts))
+	if _, err := io.ReadFull(reader, sizesBuf); err != nil {
+		log.Fatal(err)
+	}
+
+	var ctLen uint64
+	if err := binary.Read(reader, binary.LittleEndian, &ctLen); err != nil {
+		log.Fatal(err)
+	}
+
+	ctBytes := make([]byte, ctLen)
+	if _, err := io.ReadFull(reader, ctBytes); err != nil {
+		log.Fatal(err)
+	}
+
+	return mpc.UnmarshalCV(cps, int(ncts), sizesBuf, ctBytes)
+}
+
+func applyRelMaskToMatrix(g *ProtocolInfo, mat crypto.CipherMatrix) {
+	if g.relMask == nil {
+		return
+	}
+	for i := range mat {
+		mat[i] = crypto.CMult(g.cps, mat[i], g.relMask)
+		crypto.CRescale(g.cps, mat[i])
+	}
+}
+
+func applyRelMaskToVector(g *ProtocolInfo, vec crypto.CipherVector) crypto.CipherVector {
+	if g.relMask == nil {
+		return vec
+	}
+	out := crypto.CMult(g.cps, vec, g.relMask)
+	crypto.CRescale(g.cps, out)
+	return out
+}

@@ -14,6 +14,9 @@ sample_keep_file = "example_data/party1/sample_keep.txt"  # need to work with --
 snp_ids_file = "example_data/party1/snp_ids.txt"          # must be unique IDs
 geno_count_file = "example_data/party1/all.gcount.transpose.bin"
 
+## SF-Relate parameters
+relatedness_mask_file = "example_data/party1/encrypted/rel_mask.bin"
+
 ## Output and cache paths
 output_dir = "out/party1"
 cache_dir = "cache/party1"
