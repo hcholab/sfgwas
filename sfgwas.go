@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/hcholab/sfgwas/gwas"
@@ -101,8 +102,22 @@ func RunGWAS() {
 	}
 	defer stopFn()
 
-	// Run protocol
-	prot.GWAS()
+	// Select which GWAS stage(s) to run with RUN_STAGE.
+	// Supported values: all (default), qc, pca, qc+pca.
+	runStage := strings.ToLower(strings.TrimSpace(os.Getenv("RUN_STAGE")))
+	switch runStage {
+	case "", "all":
+		prot.GWAS()
+	case "qc":
+		prot.Phase1()
+	case "pca":
+		_ = prot.Phase2()
+	case "qc+pca", "qcpca":
+		prot.Phase1()
+		_ = prot.Phase2()
+	default:
+		panic(fmt.Sprintf("Unknown RUN_STAGE: %q (expected one of: all, qc, pca, qc+pca)", runStage))
+	}
 
 	prot.SyncAndTerminate(true)
 }

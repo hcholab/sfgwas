@@ -70,8 +70,8 @@ github.com/hcholab/onet/v3 v3.0.0-20230828232509-90c2e1097481/go.mod h1:2TpqrnrR
 github.com/hhcho/frand v1.3.1-0.20210217213629-f1c60c334950 h1:OGtZDKQo/R6jZMBihJWqbtIj4pjvpp04rxv4dlJsJD8=
 github.com/hhcho/frand v1.3.1-0.20210217213629-f1c60c334950/go.mod h1:V3aO22B2WDj5D+lVSyUoEwKfpblPEMnRjFbl+XToPh8=
 github.com/hhcho/mpc-core v0.0.0-20210527211839-87c954bf6638/go.mod h1:xYHXHkco7PBoOQDV4/atGuqkxopGWd7dBdX5cEoD/6k=
-github.com/hhcho/mpc-core v0.0.0-20220828210829-24cf7abd1073 h1:4CMEL3Tls1V41e6PbBFF8vDSbNjy8DXlIyFxuh+9g7U=
-github.com/hhcho/mpc-core v0.0.0-20220828210829-24cf7abd1073/go.mod h1:xYHXHkco7PBoOQDV4/atGuqkxopGWd7dBdX5cEoD/6k=
+github.com/hhcho/mpc-core v0.0.0-20240903135357-56a83f968a6a h1:wONwXwXEzq2I6k5HJD5Leh/z1V8IIRc72p9pYOIebp4=
+github.com/hhcho/mpc-core v0.0.0-20240903135357-56a83f968a6a/go.mod h1:xYHXHkco7PBoOQDV4/atGuqkxopGWd7dBdX5cEoD/6k=
 github.com/honeycombio/beeline-go v0.4.11/go.mod h1:xZNfHCpYQFjVS4Xuc8eMKhBclLnW/PvBz5L1Dwcp81Y=
 github.com/honeycombio/libhoney-go v1.12.3/go.mod h1:xzRFVBkKkFnse+rTORNz5bTRhyVpKbZAQCyG3hxd2jY=
 github.com/jtolds/gls v4.20.0+incompatible h1:xdiiI2gbIgH/gLH7ADydsJ1uDOEzR8yvV7C0MuV77Wo=

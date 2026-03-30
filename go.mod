@@ -8,7 +8,7 @@ require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/aead/chacha20 v0.0.0-20180709150244-8b13a72661da
 	github.com/hhcho/frand v1.3.1-0.20210217213629-f1c60c334950
-	github.com/hhcho/mpc-core v0.0.0-20220828210829-24cf7abd1073
+	github.com/hhcho/mpc-core v0.0.0-20240903135357-56a83f968a6a
 	github.com/ldsec/lattigo/v2 v2.4.0
 	github.com/ldsec/unlynx v1.4.3
 	github.com/raulk/go-watchdog v1.3.0
