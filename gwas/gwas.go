@@ -374,23 +374,26 @@ func (g *ProtocolInfo) Phase3(Qpca crypto.CipherMatrix) {
 
 	net.PrintNetworkLog()
 
-	// Collective decrypt and save to file
+	// Collective decrypt and save to file (one output file per phenotype)
 	if g.mpcObj[0].GetPid() > 0 {
-		assocDec := g.mpcObj[0].Network.CollectiveDecryptVec(g.cps, assoc, -1)
-		out := crypto.DecodeFloatVector(g.cps, assocDec)
+		for pheno := range assoc {
+			assocDec := g.mpcObj[0].Network.CollectiveDecryptVec(g.cps, assoc[pheno], -1)
+			out := crypto.DecodeFloatVector(g.cps, assocDec)
 
-		outFinal := make([]float64, SumBool(outFilter))
-		index := 0
-		for i := range outFilter {
-			if outFilter[i] {
-				outFinal[index] = out[i]
-				index++
+			outFinal := make([]float64, SumBool(outFilter))
+			index := 0
+			for i := range outFilter {
+				if outFilter[i] {
+					outFinal[index] = out[i]
+					index++
+				}
 			}
-		}
 
-		SaveFloatVectorToFile(g.OutPath("assoc.txt"), outFinal)
+			outFile := g.OutPath(fmt.Sprintf("assoc_%d.txt", pheno))
+			SaveFloatVectorToFile(outFile, outFinal)
+			log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s", outFile))
+		}
 	}
-	log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s", g.OutPath("assoc.txt")))
 }
 
 func (g *ProtocolInfo) GWAS() {
@@ -697,7 +700,7 @@ func (g *ProtocolInfo) PopulationStratification() crypto.CipherMatrix {
 
 }
 
-func (g *ProtocolInfo) ComputeAssocStatistics(Qpca crypto.CipherMatrix) (crypto.CipherVector, []bool) {
+func (g *ProtocolInfo) ComputeAssocStatistics(Qpca crypto.CipherMatrix) (crypto.CipherMatrix, []bool) {
 	assocTest := g.InitAssociationTests(Qpca)
 	return assocTest.GetAssociationStats()
 }

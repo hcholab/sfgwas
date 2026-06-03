@@ -3,3 +3,6 @@ cache/*
 stdout*
 sfgwas
 out/
+.venv/
+lattigo/
+mpc-core/

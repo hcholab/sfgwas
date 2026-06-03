@@ -32,7 +32,8 @@ func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint
 		skShard = kgen.GenSecretKey()
 
 		skShard.Value.Zero()
-		prng, err := utils.NewPRNG() // Use NewKeyedPRNG for debugging if deterministic behavior is desired
+		seed := []byte{42, byte(netObj[0].GetPid())}
+		prng, err := utils.NewKeyedPRNG(seed)
 		if err != nil {
 			panic(err)
 		}
