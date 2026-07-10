@@ -120,7 +120,7 @@ func RunGWAS() {
 		panic(fmt.Sprintf("Unknown RUN_STAGE: %q (expected one of: all, qc, pca, qc+pca)", runStage))
 	}
 
-	fmt.Println("force-quit-sfkit-protocol-magic-07102026")
+	log.LLvl1(time.Now().Format(time.RFC3339), "force-quit-sfkit-protocol-magic-07102026")
 	prot.SyncAndTerminate(true)
 }
 
