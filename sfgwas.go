@@ -120,6 +120,7 @@ func RunGWAS() {
 	}
 
 	prot.SyncAndTerminate(true)
+	fmt.Println("force-quit-sfkit-protocol-magic-07102026")
 }
 
 func RunPCA() {
