@@ -92,6 +92,7 @@ func RunGWAS() {
 		panic(PID_ERR)
 	}
 
+	fmt.Println("Running GWAS protocol v0.0.1")
 	// Initialize protocol
 	prot := InitGWASProtocol(CONFIG_PATH)
 
