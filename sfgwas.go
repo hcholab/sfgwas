@@ -7,11 +7,13 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/hcholab/sfgwas/gwas"
 	"github.com/hcholab/sfgwas/pca"
 	"github.com/raulk/go-watchdog"
+	"go.dedis.ch/onet/v3/log"
 )
 
 // Expects a party ID provided as an environment variable;
