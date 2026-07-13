@@ -357,6 +357,11 @@ func (g *ProtocolInfo) Phase2() crypto.CipherMatrix {
 	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Finished PCA")
 
 	net.PrintNetworkLog()
+	
+	outFile := g.OutPath("pca.txt")
+	for p := 1; p <= g.config.NumMainParties; p++ {
+		SaveMatrixToFile(g.cps, g.mpcObj[0], Qpca, g.gwasParams.numFiltInds[p], p, outFile)
+	}
 
 	return Qpca
 }
