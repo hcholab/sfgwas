@@ -396,8 +396,8 @@ func (g *ProtocolInfo) Phase3(Qpca crypto.CipherMatrix) {
 
 			outFile := g.OutPath(fmt.Sprintf("assoc_%d.txt", pheno))
 			SaveFloatVectorToFile(outFile, outFinal)
-			log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Output collectively decrypted and saved to: %s", outFile))
 		}
+		log.LLvl1(time.Now().Format(time.RFC3339), "Output collectively decrypted and saved to assoc files")
 	}
 }
 
