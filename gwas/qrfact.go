@@ -44,8 +44,7 @@ func getQR(cryptoParams *crypto.CryptoParams, A *mat.Dense, scalingFactor float6
 }
 
 // Since required precision scales with 1/sqrt(n) maintain sqrt(n)*v for unit vectors v
-func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.CipherMatrix, nrowsAll []int) crypto.CipherMatrix {
-	debug := false
+func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.CipherMatrix, nrowsAll []int, debug bool = false) crypto.CipherMatrix {
 	useBoolean := mpcObj.GetBooleanShareFlag()
 
 	// A is column-encrypted matrix with rows split amongst parties
