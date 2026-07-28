@@ -84,6 +84,7 @@ func (qc *QC) IndividualMissAndHetFilters() []bool {
 // gc: genotype counts (0, 1, 2)
 // miss: missing value counts
 func (qc *QC) SNPFilterWithPrecomputedStats(ac, gc [][]uint32, miss []uint32, useCache bool) []bool {
+	debug = qc.general.config.Debug
 	mpcPar := qc.general.mpcObj
 	pid := mpcPar[0].GetPid()
 	numSnpWindow := len(miss)
@@ -114,7 +115,7 @@ func (qc *QC) SNPFilterWithPrecomputedStats(ac, gc [][]uint32, miss []uint32, us
 			runtime.GC() // Clean up memory
 			log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Variant QC: finished processing %d-%d / %d,", start, end, numSnpWindow), time.Since(startTime))
 
-			if pid > 0 {
+			if debug && pid > 0 {
 				cacheFile := qc.general.CachePath(fmt.Sprintf("gkeep.%d.bin", batchIndex))
 				writeFilterToFile(cacheFile, outSub, true)
 				log.LLvl1(time.Now().Format(time.RFC3339), "QC filter wrote to cache:", cacheFile)
@@ -403,6 +404,7 @@ func (qc *QC) SNPMAFAndHWEFilters() []bool {
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Computing SNP filters (minor allele frequency and Hardy-Weinberg equilibrium)")
 
+	debug = qc.general.config.Debug
 	mpcPar := qc.general.mpcObj
 	rtype := mpcPar[0].GetRType()
 	pid := mpcPar[0].GetPid()
@@ -472,7 +474,7 @@ func (qc *QC) SNPMAFAndHWEFilters() []bool {
 	xCountRV := mpc_core.IntToRVec(rtype, xCount)
 	xSumRV := mpc_core.IntToRVec(rtype, xSum)
 
-	{ // DEBUG
+	if debug { // DEBUG
 		if pid > 0 {
 			SaveIntVectorToFile(qc.general.CachePath("gkeep_test_xcount.txt"), mpcPar.RevealSymVec(xCountRV).ToInt())
 			SaveIntVectorToFile(qc.general.CachePath("gkeep_test_xsum.txt"), mpcPar.RevealSymVec(xSumRV).ToInt())
@@ -504,7 +506,7 @@ func (qc *QC) SNPMAFAndHWEFilters() []bool {
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "done.", time.Since(start))
 
-	{ // DEBUG
+	if debug { // DEBUG
 		if pid > 0 {
 			SaveFloatVectorToFile(qc.general.CachePath("gkeep_test_ispos.txt"), mpcPar.RevealSymVec(xCountSq).ToFloat(20))
 
