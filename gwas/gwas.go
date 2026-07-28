@@ -61,6 +61,7 @@ type Config struct {
 	UseCachedPCA       bool `toml:"use_cached_pca"`
 	UseCachedCombinedQ bool `toml:"use_cached_combined_q"`
 	SkipPowerIter      bool `toml:"skip_power_iter"`
+	UseCachedPowerIter bool `toml:"use_cached_power_iter"`
 	PCARestartIter     int  `toml:"restart_pca_from_iter"`
 
 	IndMissUB    float64 `toml:"imiss_ub"`

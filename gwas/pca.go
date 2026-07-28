@@ -1,13 +1,18 @@
 package gwas
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"math"
+	"os"
+	"path/filepath"
 	"time"
 
 	"go.dedis.ch/onet/v3/log"
 
 	"github.com/hcholab/sfgwas/crypto"
+	"github.com/hcholab/sfgwas/mpc"
 	mpc_core "github.com/hhcho/mpc-core"
 
 	"github.com/ldsec/lattigo/v2/ckks"
@@ -50,6 +55,7 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 	debug := pca.general.config.Debug
 	restartIter := pca.general.config.PCARestartIter
 	skipPowerIter := pca.general.config.SkipPowerIter
+	useCachedPowerIter := pca.general.config.UseCachedPowerIter
 	binaryVersion := pca.general.config.MpcBooleanShares
 
 	gwasParams := pca.general.gwasParams
@@ -244,7 +250,26 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 
 	if !skipPowerIter {
 
-		if restartIter <= 0 {
+		// Iteration whose checkpoint the power iteration picks up from, or -1 to
+		// start from the sketch. An explicit restart_pca_from_iter sets a floor;
+		// use_cached_power_iter can only move it forward, to a newer checkpoint.
+		resumeIter := -1
+		if restartIter > 0 {
+			resumeIter = restartIter
+		}
+
+		if useCachedPowerIter {
+			localIter := -1
+			if pid > 0 {
+				localIter = FindLatestPowerIterCache(pca.general.config.CacheDir, resumeIter+1, nPowerIter, kp)
+			}
+
+			if agreed := AgreePowerIterCache(mpcObj, localIter); agreed >= 0 {
+				resumeIter = agreed
+			}
+		}
+
+		if resumeIter < 0 {
 
 			if pid > 0 {
 				// Normalize to reduce value range of Q
@@ -310,56 +335,47 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 			}
 
 		} else { // Load in cached Q
-			log.LLvl1(time.Now().Format(time.RFC3339), "Restarting power iteration from iter ", restartIter+1, "/", nPowerIter)
+			log.LLvl1(time.Now().Format(time.RFC3339), "Restarting power iteration from iter ", resumeIter+1, "/", nPowerIter)
 
-			if pid > 0 {
-				// TODO cache ciphertexts instead
-				cacheFile := pca.general.CachePath(fmt.Sprintf("QmulB_%d.txt", restartIter))
-				mat := LoadMatrixFromFileFloat(cacheFile, ',')
-				Qloc, _, _, _ = crypto.EncryptFloatMatrixRow(cryptoParams, mat)
+			Qloc = LoadPowerIterCache(cryptoParams, mpcObj, pca.general.CachePath(PowerIterCacheName(resumeIter)), kp)
 
-				log.LLvl1(time.Now().Format(time.RFC3339), "Cache loaded. Number of rows:", kp, cacheFile)
-			} else {
-				Qloc = make(crypto.CipherMatrix, kp)
-			}
-
-			if restartIter == nPowerIter-1 {
+			// The checkpoint holds Qloc as it stood before the distributed QR, so
+			// the QR is redone here, except after the final iteration, where the
+			// loop below skips it as well.
+			if resumeIter == nPowerIter-1 {
 				Q = Qloc
 			} else {
 				Q = NetDQRenc(cryptoParams, mpcObj, Qloc, nRowsAll)
 			}
-
 		}
 
-		itStart := 0
-		if restartIter > 0 {
-			itStart = restartIter + 1
-		}
+		itStart := resumeIter + 1
 
 		// Power iteration
 		for it := itStart; it < nPowerIter; it++ {
 			log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Power iteration iter ", it+1, "/", nPowerIter)
 
-			// Compute Q*X', row-based encoding
 			if pid > 0 {
-				Qloc := QXtLazyNormStream(cryptoParams, mpcObj, Q, Xcache, XMean, XStdInv)
+				// Compute Q*X', row-based encoding
+				Qloc = QXtLazyNormStream(cryptoParams, mpcObj, Q, Xcache, XMean, XStdInv)
 
 				Qloc = crypto.CMultConstMat(cryptoParams, Qloc, numTotIndSqrtInv, true) // scale by 1/sqrt(n)
 				Q = mpcObj.Network.AggregateCMat(cryptoParams, Qloc)
 				Q = mpcObj.Network.CollectiveBootstrapMat(cryptoParams, Q, -1)
-			}
 
-			if pid > 0 {
 				Qloc = QXLazyNormStream(cryptoParams, mpcObj, Q, XTcache, XMean, XStdInv, nRowsAll[pid])
 				Qloc = mpcObj.Network.BootstrapMatAll(cryptoParams, Qloc)
 				Qloc = crypto.CMultConstMat(cryptoParams, Qloc, numSnpSqrtInv, true) // scale by 1/sqrt(m)
-			}
 
-			if debug && pid > 0 {
-				pv := mpcObj.Network.CollectiveDecryptVec(cryptoParams, Qloc[0], 1)
-				log.LLvl1(time.Now().Format(time.RFC3339), "Power iter", it+1, crypto.DecodeFloatVector(cryptoParams, pv)[:5])
-				for outp := 1; outp < mpcObj.GetNParty(); outp++ {
-					SaveMatrixToFile(cryptoParams, mpcObj, Qloc, nRowsAll[outp], outp, pca.general.CachePath(fmt.Sprintf("QmulB_%d.txt", it)))
+				if debug {
+					pv := mpcObj.Network.CollectiveDecryptVec(cryptoParams, Qloc[0], 1)
+					log.LLvl1(time.Now().Format(time.RFC3339), "Power iter", it+1, crypto.DecodeFloatVector(cryptoParams, pv)[:5])
+				}
+
+				if debug || useCachedPowerIter {
+					for outp := 1; outp < mpcObj.GetNParty(); outp++ {
+						SaveMatrixToFile(cryptoParams, mpcObj, Qloc, nRowsAll[outp], outp, pca.general.CachePath(PowerIterCacheName(it)))
+					}
 				}
 			}
 
@@ -493,4 +509,116 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 	mpcObj.AssertSync()
 
 	return Qpc
+}
+
+// PowerIterCacheName is the file name of the checkpoint written at the end of
+// iteration it of the power iteration. Shared by the writer, the resume scan
+// and restart_pca_from_iter so the three cannot drift apart.
+func PowerIterCacheName(it int) string {
+	return fmt.Sprintf("QmulB_%d.txt", it)
+}
+
+// FindLatestPowerIterCache returns the largest iteration index in
+// [itStart, nPowerIter) for which cacheDir holds a usable power iteration
+// checkpoint, or -1 if there is none. A checkpoint counts as usable only if it
+// has the expected numRows rows, so a file left truncated by an interrupted run
+// is passed over in favor of an earlier, intact one.
+func FindLatestPowerIterCache(cacheDir string, itStart, nPowerIter, numRows int) int {
+	for it := nPowerIter - 1; it >= itStart; it-- {
+		cacheFile := filepath.Join(cacheDir, PowerIterCacheName(it))
+
+		rows, err := countLines(cacheFile)
+		if os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			log.LLvl1(time.Now().Format(time.RFC3339), "Ignoring unreadable power iteration cache", cacheFile, err)
+			continue
+		}
+
+		if rows != numRows {
+			log.LLvl1(time.Now().Format(time.RFC3339), "Ignoring incomplete power iteration cache", cacheFile,
+				"- expected", numRows, "rows, found", rows)
+			continue
+		}
+
+		return it
+	}
+
+	return -1
+}
+
+// AgreePowerIterCache reduces the parties' local resume points to the single
+// one they all share: the smallest index any data party can supply. The power
+// iteration runs collective operations in lockstep, so parties entering the
+// loop at different iterations would deadlock. Party 0 holds no cache files of
+// its own and takes whatever the data parties settle on.
+func AgreePowerIterCache(mpcObj *mpc.MPC, localIter int) int {
+	netObj := mpcObj.Network
+	pid, hubPid, nParty := mpcObj.GetPid(), mpcObj.GetHubPid(), mpcObj.GetNParty()
+
+	if pid != hubPid {
+		if pid > 0 {
+			netObj.SendInt(localIter, hubPid)
+		}
+		return netObj.ReceiveInt(hubPid)
+	}
+
+	agreed := localIter
+	for p := 1; p < nParty; p++ {
+		if p == hubPid {
+			continue
+		}
+
+		if other := netObj.ReceiveInt(p); other < agreed {
+			agreed = other
+		}
+	}
+
+	for p := 0; p < nParty; p++ {
+		if p != hubPid {
+			netObj.SendInt(agreed, p)
+		}
+	}
+
+	return agreed
+}
+
+// LoadPowerIterCache re-encrypts the local Qloc share held in a power iteration
+// checkpoint. Party 0 keeps no cache of its own and gets the empty placeholder
+// the collective operations expect.
+func LoadPowerIterCache(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, cacheFile string, kp int) crypto.CipherMatrix {
+	if mpcObj.GetPid() == 0 {
+		return make(crypto.CipherMatrix, kp)
+	}
+
+	// TODO cache ciphertexts instead
+	Qloc, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, LoadMatrixFromFileFloat(cacheFile, ','))
+
+	log.LLvl1(time.Now().Format(time.RFC3339), "Cache loaded. Number of rows:", kp, cacheFile)
+
+	return Qloc
+}
+
+// countLines counts the newline-terminated lines in a file. A trailing partial
+// line, which is what an interrupted write leaves behind, is not counted.
+func countLines(filename string) (int, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return 0, err
+	}
+
+	defer f.Close()
+
+	count := 0
+	buf := make([]byte, 64*1024)
+	for {
+		n, err := f.Read(buf)
+		count += bytes.Count(buf[:n], []byte{'\n'})
+
+		if err == io.EOF {
+			return count, nil
+		} else if err != nil {
+			return 0, err
+		}
+	}
 }
