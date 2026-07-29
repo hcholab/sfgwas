@@ -40,6 +40,7 @@ snp_dist_thres = 100000
 ## PCA parameters
 use_cached_pca = false
 use_cached_power_iter = false
+power_iter_cache_interval = 1    # checkpoint every Nth power iteration; <= 1 means every one
 skip_pca = false
 iter_per_eigenval = 5
 num_pcs_to_remove = 5

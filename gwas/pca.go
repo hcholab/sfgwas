@@ -57,6 +57,7 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 	skipPowerIter := pca.general.config.SkipPowerIter
 	useCachedPowerIter := pca.general.config.UseCachedPowerIter
 	binaryVersion := pca.general.config.MpcBooleanShares
+	powerIterCacheInterval := pca.general.config.PowerIterCacheInterval
 
 	gwasParams := pca.general.gwasParams
 
@@ -372,7 +373,7 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 					log.LLvl1(time.Now().Format(time.RFC3339), "Power iter", it+1, crypto.DecodeFloatVector(cryptoParams, pv)[:5])
 				}
 
-				if debug || useCachedPowerIter {
+				if (debug || useCachedPowerIter) && CheckpointPowerIter(it, nPowerIter, powerIterCacheInterval) {
 					for outp := 1; outp < mpcObj.GetNParty(); outp++ {
 						SaveMatrixToFile(cryptoParams, mpcObj, Qloc, nRowsAll[outp], outp, pca.general.CachePath(PowerIterCacheName(it)))
 					}
@@ -388,26 +389,30 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 		}
 		log.LLvl1(time.Now().Format(time.RFC3339), "Power iteration complete")
 
-		if debug && pid > 0 {
-			pv := mpcObj.Network.CollectiveDecryptVec(cryptoParams, Q[0], 1)
-			log.LLvl1(time.Now().Format(time.RFC3339), "After power iter", crypto.DecodeFloatVector(cryptoParams, pv)[:5])
-			for outp := 1; outp < mpcObj.GetNParty(); outp++ {
-				SaveMatrixToFile(cryptoParams, mpcObj, Q, nRowsAll[outp], outp, pca.general.CachePath("Q_final.txt"))
+		if pid > 0 {
+			if debug {
+				pv := mpcObj.Network.CollectiveDecryptVec(cryptoParams, Q[0], 1)
+				log.LLvl1(time.Now().Format(time.RFC3339), "After power iter", crypto.DecodeFloatVector(cryptoParams, pv)[:5])
+			}
+
+			// Unlike the per-iteration checkpoints, this one is taken after the
+			// loop's final QR, so skip_power_iter can pick it up as-is.
+			if debug || useCachedPowerIter {
+				for outp := 1; outp < mpcObj.GetNParty(); outp++ {
+					SaveMatrixToFile(cryptoParams, mpcObj, Q, nRowsAll[outp], outp, pca.general.CachePath(PowerIterFinalCacheName))
+				}
 			}
 		}
 
 	} else {
-		log.LLvl1(time.Now().Format(time.RFC3339), "Power iteration skipped. Using Q_final from a previous run.")
+		log.LLvl1(time.Now().Format(time.RFC3339), "Power iteration skipped. Using", PowerIterFinalCacheName, "from a previous run.")
 
-		if pid > 0 {
-			// TODO cache ciphertexts instead
-			mat := LoadMatrixFromFileFloat(pca.general.CachePath("QmulB_9.txt"), ',') // TODO: Temporary fix, fetch Q_final instead
-			Q, _, _, _ = crypto.EncryptFloatMatrixRow(cryptoParams, mat)
-		} else {
-			Q = make(crypto.CipherMatrix, kp)
+		cacheFile := pca.general.CachePath(PowerIterFinalCacheName)
+		if pid > 0 && !fileExists(cacheFile) {
+			log.Fatal(cacheFile, "not found: skip_power_iter needs a completed run with use_cached_power_iter (or debug) enabled")
 		}
 
-		log.LLvl1(time.Now().Format(time.RFC3339), "Cache loaded. Number of rows:", kp)
+		Q = LoadPowerIterCache(cryptoParams, mpcObj, cacheFile, kp)
 	}
 
 	// Q contains Q*X' (kp by numInd) for each party
@@ -511,11 +516,30 @@ func (pca *PCA) DistributedPCA() crypto.CipherMatrix {
 	return Qpc
 }
 
+// PowerIterFinalCacheName holds Q as it stood when the power iteration
+// finished, which is what skip_power_iter picks up. It is taken after the final
+// QR, so unlike the per-iteration checkpoints it is used without redoing one.
+const PowerIterFinalCacheName = "Q_final.txt"
+
 // PowerIterCacheName is the file name of the checkpoint written at the end of
 // iteration it of the power iteration. Shared by the writer, the resume scan
 // and restart_pca_from_iter so the three cannot drift apart.
 func PowerIterCacheName(it int) string {
 	return fmt.Sprintf("QmulB_%d.txt", it)
+}
+
+// CheckpointPowerIter reports whether iteration it should be written to the
+// cache. power_iter_cache_interval trades the cost of a checkpoint against how
+// much work a resume has to redo; unset (zero) or negative means every
+// iteration, which is what the debug dumps have always done. The final
+// iteration is always written so that a completed run leaves the newest state
+// on disk.
+func CheckpointPowerIter(it, nPowerIter, interval int) bool {
+	if interval <= 1 {
+		return true
+	}
+
+	return it%interval == 0 || it == nPowerIter-1
 }
 
 // FindLatestPowerIterCache returns the largest iteration index in
@@ -583,7 +607,7 @@ func AgreePowerIterCache(mpcObj *mpc.MPC, localIter int) int {
 	return agreed
 }
 
-// LoadPowerIterCache re-encrypts the local Qloc share held in a power iteration
+// LoadPowerIterCache re-encrypts the local share held in a power iteration
 // checkpoint. Party 0 keeps no cache of its own and gets the empty placeholder
 // the collective operations expect.
 func LoadPowerIterCache(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, cacheFile string, kp int) crypto.CipherMatrix {
@@ -591,12 +615,18 @@ func LoadPowerIterCache(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, cach
 		return make(crypto.CipherMatrix, kp)
 	}
 
+	if rows, err := countLines(cacheFile); err != nil {
+		log.Fatal("Cannot read power iteration cache", cacheFile, "-", err)
+	} else if rows != kp {
+		log.Fatal("Power iteration cache", cacheFile, "is incomplete: expected", kp, "rows, found", rows)
+	}
+
 	// TODO cache ciphertexts instead
-	Qloc, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, LoadMatrixFromFileFloat(cacheFile, ','))
+	Qcache, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, LoadMatrixFromFileFloat(cacheFile, ','))
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Cache loaded. Number of rows:", kp, cacheFile)
 
-	return Qloc
+	return Qcache
 }
 
 // countLines counts the newline-terminated lines in a file. A trailing partial
