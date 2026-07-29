@@ -755,7 +755,7 @@ func DropLevel(cryptoParams *CryptoParams, A CipherMatrix, outLevel int) CipherM
 				} else if A[i][j].Level() == outLevel {
 					out[i][j] = A[i][j].CopyNew().Ciphertext()
 				} else {
-					log.Fatalf("DropLevel: requested level", outLevel, "when input is", A[i][j].Level())
+					log.Fatal("DropLevel: requested level", outLevel, "when input is", A[i][j].Level())
 				}
 				return nil
 			})
