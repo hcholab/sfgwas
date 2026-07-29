@@ -44,7 +44,11 @@ func getQR(cryptoParams *crypto.CryptoParams, A *mat.Dense, scalingFactor float6
 }
 
 // Since required precision scales with 1/sqrt(n) maintain sqrt(n)*v for unit vectors v
-func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.CipherMatrix, nrowsAll []int, debug bool = false) crypto.CipherMatrix {
+// Go has no default parameter values; the variadic stands in for the optional
+// debug flag, which is off unless a caller passes one.
+func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.CipherMatrix, nrowsAll []int, debugOpt ...bool) crypto.CipherMatrix {
+	debug := len(debugOpt) > 0 && debugOpt[0]
+
 	useBoolean := mpcObj.GetBooleanShareFlag()
 
 	// A is column-encrypted matrix with rows split amongst parties
