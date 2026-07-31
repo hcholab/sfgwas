@@ -12,20 +12,25 @@ import (
 	"go.dedis.ch/onet/v3/log"
 
 	"github.com/hcholab/sfgwas/crypto"
+	"github.com/hcholab/sfgwas/mpc"
 
+	"gonum.org/v1/gonum/floats"
 	"gonum.org/v1/gonum/mat"
 )
 
 type AssocTest struct {
 	general *ProtocolInfo
 
-	pheno crypto.PlainMatrix
-
+	pheno    crypto.PlainMatrix
 	inputCov crypto.PlainMatrix
 	Qpc      crypto.CipherMatrix
+}
 
-	MafLowerBound float64
-	MafUpperBound float64
+type AssocTestPlainMult struct {
+	general *ProtocolInfo
+
+	pheno *mat.Dense
+	covPc *mat.Dense
 }
 
 func (g *ProtocolInfo) InitAssociationTests(Qpc crypto.CipherMatrix) *AssocTest {
@@ -58,12 +63,51 @@ func (g *ProtocolInfo) InitAssociationTests(Qpc crypto.CipherMatrix) *AssocTest 
 	}
 }
 
-// To add for UKB
-// func (ast *AssocTest) Preprocessing() {
-// }
+func (g *ProtocolInfo) InitAssociationTestsPlainMult(QpcPlain *mat.Dense) *AssocTestPlainMult {
 
-// func (ast *AssocTest) AssociationTest(blockIndex, start, end int) (crypto.CipherVector, []bool) {
-// }
+	pid := g.mpcObj[0].GetPid()
+	gwasParams := g.gwasParams
+	npc := gwasParams.numPCs
+
+	// Row-major representation: rows correspond to phenotypes/covariates, columns correspond to individuals
+	// These matrices will never be encoded as plain/ciphertexts in this version
+	var phenoPlain *mat.Dense
+	var covPcPlain *mat.Dense
+
+	if pid > 0 {
+		phenoPlain = mat.DenseCopyOf(g.pheno.T()) // Rows correspond to phenotypes
+		covPlain := mat.DenseCopyOf(g.cov.T())    // Rows correspond to covariates
+
+		covRows, covCols := covPlain.Dims()
+		qpcRows, qpcCols := QpcPlain.Dims()
+
+		if qpcRows != npc {
+			log.Fatalf("InitAssociationTestsPlain: QpcPlain has %d rows; expected npc=%d", qpcRows, npc)
+		}
+
+		if qpcCols != covCols {
+			log.Fatalf("InitAssociationTestsPlain: QpcPlain has %d columns; expected %d individuals", qpcCols, covCols)
+		}
+
+		covPcPlain = mat.NewDense(covRows+qpcRows, covCols, nil)
+		covPcPlain.Stack(covPlain, QpcPlain)
+
+		npheno, _ := phenoPlain.Dims()
+		r, c := covPcPlain.Dims()
+		log.LLvl1(time.Now().Format(time.RFC3339), "Pheno count:", npheno)
+		log.LLvl1(time.Now().Format(time.RFC3339), "Cov dims (includes PCs):", r, "features", c, "samples")
+	} else {
+		phenoPlain = mat.NewDense(0, 0, nil) // multiPhenoSize communicated at runtime
+		covPcPlain = mat.NewDense(gwasParams.NumCov()+npc, 0, nil)
+		log.LLvl1(time.Now().Format(time.RFC3339), "Cov dims (includes PCs):", gwasParams.NumCov()+npc, "features", 0, "samples")
+	}
+
+	return &AssocTestPlainMult{
+		general: g,
+		pheno:   phenoPlain,
+		covPc:   covPcPlain,
+	}
+}
 
 // Orthogonal basis of covariates and PCs combined; joint QR
 func (ast *AssocTest) computeCombinedQV2(C crypto.PlainMatrix, Qpc crypto.CipherMatrix) crypto.CipherMatrix {
@@ -124,144 +168,168 @@ func (ast *AssocTest) computeCombinedQV2(C crypto.PlainMatrix, Qpc crypto.Cipher
 	return Qcomb
 }
 
-// Orthogonal basis of covariates and PCs combined
-// func (ast *AssocTest) computeCombinedQ(C crypto.PlainMatrix, Qpc crypto.CipherMatrix) crypto.CipherMatrix {
-// 	debug := ast.general.config.Debug
-// 	cryptoParams := ast.general.cps
-// 	mpcPar := ast.general.mpcObj
-// 	mpcObj := mpcPar[0]
-// 	pid := mpcPar[0].GetPid()
-// 	slots := cryptoParams.GetSlots()
+func (ast *AssocTestPlainMult) GenoBlockMultPlain(b int, mat *mat.Dense) (matOut [][]float64, dosageSum, dosageSqSum []float64, filtOut []bool) {
 
-// 	gwasParams := ast.general.gwasParams
-// 	nrowsAll := gwasParams.FiltNumInds()
-// 	nrowsTotal := 0
-// 	for i := 1; i < len(nrowsAll); i++ {
-// 		nrowsTotal += nrowsAll[i]
-// 	}
-// 	nrowsTotalInv := 1.0 / float64(nrowsTotal)
+	pid := ast.general.mpcObj[0].GetPid()
+	isPgen := ast.general.IsPgen()
+	pgenBatchSize := ast.general.config.PgenBatchSize
 
-// 	ncov := gwasParams.NumCov()
-// 	npc := gwasParams.NumPC()
+	XBlock := ast.general.genoBlocks[b]
+	numBlocks := ast.general.config.GenoNumBlocks
 
-// 	log.LLvl1(time.Now().Format(time.RFC3339), "Starting QR: C numCols", len(C))
+	gwasParams := ast.general.gwasParams
+	snpFilt := gwasParams.snpFilt
 
-// 	start := time.Now()
+	blockSize := ast.general.genoBlockSizes[b]
 
-// 	// QR on covariates
-// 	var Qi crypto.CipherMatrix
+	shift := uint64(0)
+	for i := 0; i < b; i++ {
+		shift += uint64(ast.general.genoBlockSizes[i])
+	}
 
-// 	CEnc := crypto.EncryptPlaintextMatrix(cryptoParams, C)
-// 	Qi = NetDQRenc(cryptoParams, mpcObj, CEnc, nrowsAll)
+	var nsnps int
+	if isPgen {
+		if snpFilt == nil { // no QC
+			nsnps = blockSize
+		} else {
+			nsnps = SumBool(snpFilt[shift : shift+uint64(blockSize)])
+		}
+	} else {
+		nsnps = int(XBlock.NumColsToKeep())
+	}
 
-// 	// Alternative approach (DASH): appears to be less accurate, needs a closer look
-// 	// 	Qi = NetDQRplain(cryptoParams, mpcObj, C, nrowsAll)
+	if nsnps == 0 { // empty block
+		log.LLvl1(time.Now().Format(time.RFC3339), "MatMult: block", b+1, "/", numBlocks, "skipped (empty)")
+		return
+	}
 
-// 	log.LLvl1(time.Now().Format(time.RFC3339), "Covariate QR time: ", time.Since(start))
-// 	log.LLvl1(time.Now().Format(time.RFC3339), "Qi dimensions: r,c :", len(Qi[0]), len(Qi))
+	multFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_mult.%d.bin", b))
+	dosFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_dos_sum.%d.txt", b))
+	dos2File := ast.general.CachePath(fmt.Sprintf("assoc_cache_dos_sqsum.%d.txt", b))
+	filtFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_filt.%d.txt", b))
 
-// 	Qi = mpcObj.Network.BootstrapMatAll(cryptoParams, Qi)
+	if fileExists(multFile) && fileExists(dosFile) && fileExists(dos2File) && fileExists(filtFile) {
 
-// 	log.LLvl1(time.Now().Format(time.RFC3339), "Qi replacing first vector with an all-ones vector (normalized)")
-// 	if pid > 0 {
-// 		ct := crypto.CZeros(cryptoParams, 1)[0]
-// 		ct = crypto.AddConst(cryptoParams, ct, 1.0)
+		log.LLvl1(time.Now().Format(time.RFC3339), "MatMult: block", b+1, "/", numBlocks, "cache found")
 
-// 		QiFirst := make(crypto.CipherVector, ((nrowsAll[pid]-1)/slots)+1)
-// 		for i := range QiFirst {
-// 			nElem := slots
-// 			if i == len(QiFirst)-1 {
-// 				nElem = nrowsAll[pid] - (len(QiFirst)-1)*slots
-// 			}
-// 			QiFirst[i] = crypto.MaskTrunc(cryptoParams, ct, nElem)
-// 		}
+		matOut = LoadMatrixFromFileFloat(multFile, ',')
+		dosageSum = LoadFloatVectorFromFile(dosFile, nsnps)
+		dosageSqSum = LoadFloatVectorFromFile(dos2File, nsnps)
+		filtOut = readFilterFromFile(filtFile, nsnps, true)
 
-// 		Qi[0] = QiFirst
-// 		Qi, _ = crypto.FlattenLevels(cryptoParams, Qi)
-// 	}
+		log.LLvl1("Dosage Sum:", dosageSum[:5])
+		log.LLvl1("Dosage SqSum:", dosageSqSum[:5])
 
-// 	if debug && pid > 0 {
-// 		for party := 1; party <= ast.general.config.NumMainParties; party++ {
-// 			SaveMatrixToFile(cryptoParams, mpcObj, Qi, nrowsAll[party], party, ast.general.CachePath("Qi.txt"))
-// 		}
-// 	}
+	} else {
 
-// 	log.LLvl1(time.Now().Format(time.RFC3339), "AssertSync")
-// 	mpcObj.AssertSync()
+		log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: MatMult: block", b+1, "/", numBlocks, "starting")
 
-// 	// Compute (I - Qi * Qi') * Qpc
-// 	fn := func(cp *crypto.CryptoParams, a crypto.CipherVector,
-// 		B crypto.CipherMatrix, j int) crypto.CipherVector {
-// 		return crypto.CMult(cp, a, B[j])
-// 	}
+		filtOut = make([]bool, nsnps)
+		for i := range filtOut {
+			filtOut[i] = true
+		}
 
-// 	Qpcmi := make(crypto.CipherMatrix, npc)
+		start := time.Now()
+		if isPgen {
 
-// 	if pid > 0 && Qpc != nil {
+			numInd := gwasParams.numFiltInds[pid]
+			snpFilt := gwasParams.snpFilt[shift : shift+uint64(blockSize)]
 
-// 		Qpcmi = DCMatMulAAtB(cryptoParams, mpcObj, Qi, Qpc, nrowsAll, npc, fn)
+			pgenFile := fmt.Sprintf(ast.general.config.GenoFilePrefix, b+1) // Geno file for chromosome b+1
 
-// 		if debug {
-// 			for party := 1; party <= ast.general.config.NumMainParties; party++ {
-// 				SaveMatrixToFile(cryptoParams, mpcObj, Qpc, nrowsAll[party], party, ast.general.CachePath("Qpc_assoc.txt"))
-// 				SaveMatrixToFile(cryptoParams, mpcObj, Qpcmi, nrowsAll[party], party, ast.general.CachePath("Qpcmi_mult.txt"))
-// 			}
-// 		}
+			startIndex := 0
+			counter := 0
+			outShift := 0
+			batchIndex := 0
 
-// 		for c := range Qpcmi {
-// 			Qpcmi[c] = crypto.CMultConstRescale(cryptoParams, Qpcmi[c], nrowsTotalInv, true)
-// 			Qpcmi[c] = crypto.CSub(cryptoParams, Qpc[c], Qpcmi[c])
-// 		}
+			dimsOut, _ := mat.Dims()
 
-// 		Qpcmi = mpcObj.Network.BootstrapMatAll(cryptoParams, Qpcmi)
-// 	}
+			nbatch := 1 + (nsnps-1)/pgenBatchSize
 
-// 	if debug && pid > 0 {
-// 		for party := 1; party <= ast.general.config.NumMainParties; party++ {
-// 			SaveMatrixToFile(cryptoParams, mpcObj, Qpcmi, nrowsAll[party], party, ast.general.CachePath("Qpcmi_before_QR.txt"))
-// 		}
-// 	}
+			matOut = make([][]float64, dimsOut)
+			for i := range matOut {
+				matOut[i] = make([]float64, nsnps)
+			}
+			dosageSum = make([]float64, nsnps)
+			dosageSqSum = make([]float64, nsnps)
 
-// 	// QR factorize Qpcmi
-// 	if Qpc != nil {
-// 		start = time.Now()
+			nblocksParallel := ast.general.config.LocalAssocNumBlocksParallel
+			nprocsPerBlock := Max(1, runtime.GOMAXPROCS(0)/nblocksParallel)
 
-// 		Qpcmi = NetDQRenc(cryptoParams, mpcObj, Qpcmi, nrowsAll)
+			// Dispatcher
+			threadPool := make(chan int, nblocksParallel)
+			for i := 0; i < nblocksParallel; i++ {
+				threadPool <- i
+			}
 
-// 		log.LLvl1(time.Now().Format(time.RFC3339), "QR(Qpcmi) time: ", time.Since(start))
-// 		log.LLvl1(time.Now().Format(time.RFC3339), "QR(Qpcmi) dimensions: r,c :", len(Qi[0]), len(Qi))
+			var wg sync.WaitGroup
 
-// 		Qpcmi = mpcObj.Network.BootstrapMatAll(cryptoParams, Qpcmi)
-// 	}
+			for idx := 0; idx < blockSize; idx++ {
+				if snpFilt[idx] {
+					counter++
+				}
 
-// 	log.LLvl1(time.Now().Format(time.RFC3339), "AssertSync")
-// 	mpcObj.AssertSync()
+				if counter == pgenBatchSize || (idx == blockSize-1 && counter > 0) {
+					// Fetch an available thread
+					threadId := <-threadPool
+					wg.Add(1)
 
-// 	if debug && pid > 0 {
-// 		for party := 1; party <= ast.general.config.NumMainParties; party++ {
-// 			SaveMatrixToFile(cryptoParams, mpcObj, Qpcmi, nrowsAll[party], party, ast.general.CachePath("Qpcmi.txt"))
-// 		}
-// 	}
+					go func(threadId, batchIndex, startIndex, idx, counter, shift, outShift int) {
+						defer wg.Done()
 
-// 	var Q crypto.CipherMatrix
+						start := time.Now()
+						log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("MatMult: block %d/%d, batch %d/%d, thread %d started", b+1, numBlocks, batchIndex+1, nbatch, threadId))
 
-// 	if pid > 0 {
-// 		// Concatenate Qi and Qpcmi
-// 		if Qpc == nil {
-// 			Q = Qi
-// 		} else {
-// 			Q = make(crypto.CipherMatrix, ncov+npc)
-// 			for c := range Qi {
-// 				Q[c] = Qi[c]
-// 			}
-// 			for c := range Qpcmi {
-// 				Q[ncov+c] = Qpcmi[c]
-// 			}
-// 		}
-// 	}
+						batchFilt := snpFilt[startIndex : idx+1]
+						gfsTempFile := ast.general.CachePath(fmt.Sprintf("pgen_gfs.%d.tmp", threadId))
 
-// 	return Q
-// }
+						FilterMatrixFilePgen(pgenFile, numInd, counter, ast.general.config.SampleKeepFile, ast.general.config.SnpIdsFile, shift+startIndex, batchFilt, gfsTempFile)
+
+						X := NewGenoFileStream(gfsTempFile, uint64(numInd), uint64(counter), true)
+
+						mult, sum, sqSum := MatMult4StreamPlain(mat, X, true, nprocsPerBlock)
+
+						for r := 0; r < len(matOut); r++ {
+							copy(matOut[r][outShift:outShift+counter], mult[r])
+						}
+						copy(dosageSum[outShift:outShift+counter], sum)
+						copy(dosageSqSum[outShift:outShift+counter], sqSum)
+
+						log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("MatMult: block %d/%d, batch %d/%d, thread %d finished,", b+1, numBlocks, batchIndex+1, nbatch, threadId), "elapsed time", time.Since(start))
+
+						// Return thread to pool
+						threadPool <- threadId
+					}(threadId, batchIndex, startIndex, idx, counter, int(shift), outShift)
+
+					outShift += counter
+					startIndex = idx + 1
+					batchIndex++
+					counter = 0
+				}
+			}
+
+			wg.Wait() // Wait until all batches are finished
+			close(threadPool)
+
+		} else {
+			matOut, dosageSum, dosageSqSum = MatMult4StreamPlain(mat, XBlock, true, 0)
+
+			for c := 0; c < nsnps; c++ {
+				filtOut[c] = true
+			}
+		}
+
+		log.LLvl1(time.Now().Format(time.RFC3339), "MatMult: block", b+1, "/", numBlocks, "elapsed time", time.Since(start))
+
+		// Save cache
+		SaveFloatMatrixToFile(multFile, matOut)
+		SaveFloatVectorToFile(dosFile, dosageSum)
+		SaveFloatVectorToFile(dos2File, dosageSqSum)
+		writeFilterToFile(filtFile, filtOut, true)
+	}
+
+	return
+}
 
 func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix) (matOut crypto.CipherMatrix, dosageSum, dosageSqSum []float64, filtOut []bool) {
 	cryptoParams := ast.general.cps
@@ -547,7 +615,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
 		}
 
 		ynew := DCMatMulAAtBPlain(cryptoParams, mpcObj, Q, ymat, nrowsAll, multiPhenoSize, mmplainfn) // Level -2
-		
+
 		for i := 0; i < multiPhenoSize; i++ {
 			ynew[i] = crypto.CMultConstRescale(cryptoParams, ynew[i], nrowsTotalInv, true)
 		}
@@ -619,7 +687,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
 		concat := make(crypto.CipherMatrix, len(Q)+1+multiPhenoSize) // remove all ones
 		copy(concat, Q)
 		concat[len(Q)] = omu
-		
+
 		for i := 0; i < multiPhenoSize; i++ {
 			concat[len(Q)+1+i] = ynew[i]
 		}
@@ -765,13 +833,13 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
 		if !covAllOnes {
 			sx = crypto.CMultConst(cryptoParams, sx, sqrtinvn, true) // sx / sqrt(n)
 
-			varx = crypto.CMult(cryptoParams, sx, sx)    // sx * sx / n
+			varx = crypto.CMult(cryptoParams, sx, sx)   // sx * sx / n
 			varx = crypto.CSub(cryptoParams, sxx, varx) // varx = sxx - (sx * sx / n)
 
 			vary = make(crypto.CipherMatrix, multiPhenoSize)
 			for i := 0; i < multiPhenoSize; i++ {
 				sy[i] = crypto.CMultConst(cryptoParams, sy[i], sqrtinvn, true) // sy[i] / sqrt(n)
-				vary[i] = crypto.CMult(cryptoParams, sy[i], sy[i])              // sy[i] * sy[i] / n
+				vary[i] = crypto.CMult(cryptoParams, sy[i], sy[i])             // sy[i] * sy[i] / n
 				vary[i] = crypto.CSub(cryptoParams, syy[i], vary[i])           // vary[i] = syy[i] - (sy[i]*sy[i]/n)
 			}
 		} else {
@@ -781,20 +849,20 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
 
 		if debug {
 			writeFilterToFile(ast.general.CachePath("xfilt.bin"), outFilter, true)
-			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{sx}, len(sx)*slots, -1, ast.general.CachePath("sx.txt"))    // sx / sqrt(n)
-			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{sxx}, len(sxx)*slots, -1, ast.general.CachePath("sxx.txt")) // sxx
-			SaveMatrixToFile(cryptoParams, mpcObj, sy, 1, -1, ast.general.CachePath("sy.txt"))                             // sy / sqrt(n)
-			SaveMatrixToFile(cryptoParams, mpcObj, syy, 1, -1, ast.general.CachePath("syy.txt"))                           // syy
-			SaveMatrixToFile(cryptoParams, mpcObj, sxy, len(sxy[0])*slots, -1, ast.general.CachePath("sxy.txt"))           // sxy
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{sx}, len(sx)*slots, -1, ast.general.CachePath("sx.txt"))       // sx / sqrt(n)
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{sxx}, len(sxx)*slots, -1, ast.general.CachePath("sxx.txt"))    // sxx
+			SaveMatrixToFile(cryptoParams, mpcObj, sy, 1, -1, ast.general.CachePath("sy.txt"))                                        // sy / sqrt(n)
+			SaveMatrixToFile(cryptoParams, mpcObj, syy, 1, -1, ast.general.CachePath("syy.txt"))                                      // syy
+			SaveMatrixToFile(cryptoParams, mpcObj, sxy, len(sxy[0])*slots, -1, ast.general.CachePath("sxy.txt"))                      // sxy
 			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{varx}, len(varx)*slots, -1, ast.general.CachePath("varx.txt")) // sxx - (sx*sx/n)
-			SaveMatrixToFile(cryptoParams, mpcObj, vary, 1, -1, ast.general.CachePath("vary.txt"))                         // syy - (sy*sy/n)
+			SaveMatrixToFile(cryptoParams, mpcObj, vary, 1, -1, ast.general.CachePath("vary.txt"))                                    // syy - (sy*sy/n)
 		}
 	}
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "AssertSync")
 	mpcObj.AssertSync()
 
-	stdinvx, stdinvy := ast.computeStdInv(varx, vary, nsnps, outFilter)
+	stdinvx, stdinvy := ComputeStdInv(cryptoParams, mpcPar, varx, vary, nsnps, outFilter, debug)
 	log.LLvl1(time.Now().Format(time.RFC3339), "Computed stdev")
 
 	if pid > 0 {
@@ -803,12 +871,425 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
 			var s crypto.CipherVector
 			if !covAllOnes {
 				s = crypto.CMultScalar(cryptoParams, sx, sy[i][0]) // sx * sy[i] / n
-				s = crypto.CSub(cryptoParams, sxy[i], s)               // sxy[i] - (sx * sy[i] / n)
+				s = crypto.CSub(cryptoParams, sxy[i], s)           // sxy[i] - (sx * sy[i] / n)
 			} else {
 				s = sxy[i]
 			}
-			s = crypto.CMult(cryptoParams, s, stdinvx)           // stdinvx * (sxy[i] - ...)
-			s = crypto.CMultScalar(cryptoParams, s, stdinvy[i])  // stdinvx * stdinvy[i] * ...
+			s = crypto.CMult(cryptoParams, s, stdinvx)          // stdinvx * (sxy[i] - ...)
+			s = crypto.CMultScalar(cryptoParams, s, stdinvy[i]) // stdinvx * stdinvy[i] * ...
+			stats[i] = s
+		}
+
+		log.LLvl1(time.Now().Format(time.RFC3339), "All done!")
+
+		return stats, outFilter
+	}
+
+	return nil, nil // party 0
+}
+
+// Optimized version that assumes PCs are provided in plaintext.
+// Performs multiplications on local plaintext matrices to avoid expensive cipher-plain operations
+// on the genotype matrix, then corrects for covariates using the inverse covariance matrix
+func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatrix, []bool) {
+	debug := ast.general.config.Debug
+
+	covAllOnes := ast.general.config.CovAllOnes // Flag indicating whether cov includes an all-ones covariate
+
+	cryptoParams := ast.general.cps
+	mpcPar := ast.general.mpcObj
+	mpcObj := mpcPar[0]
+	fracBits := mpcObj.GetFracBits()
+	dataBits := mpcObj.GetDataBits()
+	useBoolean := mpcObj.GetBooleanShareFlag()
+	rtype := mpcObj.GetRType()
+	pid := mpcPar[0].GetPid()
+	gwasParams := ast.general.gwasParams
+	slots := cryptoParams.GetSlots()
+	numThreads := ast.general.config.LocalNumThreads
+
+	numBlocks := ast.general.config.GenoNumBlocks
+
+	/* Sample counts */
+	nrowsAll := gwasParams.FiltNumInds()
+	nrowsTotal := 0
+	for i := 1; i < len(nrowsAll); i++ {
+		nrowsTotal += nrowsAll[i]
+	}
+	nrowsTotalInv := 1.0 / float64(nrowsTotal)
+
+	/* Setup covariates and  PCs */
+	// TODO: Ensure that QpcPlain is correctly set and matches the dimensions of the covariates.
+	var Zt *mat.Dense
+	var Yt *mat.Dense
+
+	var ncov, npheno int
+	if pid > 0 {
+		Zt = ast.covPc
+		Yt = mat.DenseCopyOf(ast.pheno.T())
+
+		ncov, _ = Zt.Dims()
+		npheno, _ = Yt.Dims()
+
+		if !covAllOnes {
+			log.LLvl1("Adding an all-ones covariate")
+
+			rows, cols := Zt.Dims()
+			zWithIntercept := mat.NewDense(rows+1, cols, nil)
+			zWithIntercept.Copy(Zt)
+
+			intercept := zWithIntercept.RawRowView(rows)
+			for i := range intercept {
+				intercept[i] = 1
+			}
+
+			Zt = zWithIntercept
+			ncov += 1
+			covAllOnes = true
+		} else {
+			log.LLvl1("Warning: assumes the first covariate is all ones (if not, reorder input)")
+		}
+
+		// Communicate dimensions to Party 0
+		if pid == mpcObj.GetHubPid() {
+			mpcObj.Network.SendInt(ncov, 0)
+			mpcObj.Network.SendInt(npheno, 0)
+		}
+	} else { // pid == 0
+		ncov = mpcObj.Network.ReceiveInt(mpcObj.GetHubPid())
+		npheno = mpcObj.Network.ReceiveInt(mpcObj.GetHubPid())
+	}
+
+	/* Compute S of (Zt*Z)^{-1} = St*S (dims: ncov-by-ncov) */
+
+	var tmp mat.SymDense
+	if pid > 0 {
+		tmp.SymOuterK(1.0/math.Sqrt(float64(nrowsTotal)), Zt) // Scale Zt*Z by 1/sqrt(n)
+	}
+	var ZtZss mpc_core.RMat
+	if pid > 0 {
+		ZtZss = mpc.DenseToRMat(rtype, &tmp, fracBits)
+	} else {
+		ZtZss = mpc_core.InitRMat(rtype.Zero(), ncov, ncov)
+	}
+	tmp.Reset()
+
+	// ZtZ now contains this party's shares of the implicitly aggregated ZᵀZ
+
+	Vtss, Lss := mpcObj.EigenDecomp(ZtZss)
+	_, LsqrtInvss := mpcObj.SqrtAndSqrtInverse(Lss, useBoolean)
+
+	// Let S = diag(LsqrtInv) * Vt / sqrt(sqrt(n))
+	// S*Zt = Qt where Q = QR(Z)
+	// Need to replace Qt with S*Zt in the subsequent computations
+
+	// We need a factor of 1/sqrt(sqrt(n)); later matmul contributes 1/sqrt(n).
+	// Pre-multiply by sqrt(sqrt(n)) here so the net factor becomes 1/sqrt(sqrt(n)).
+	if pid > 0 {
+		scaling := rtype.FromFloat64(math.Sqrt(math.Sqrt(float64(nrowsTotal))), fracBits)
+		LsqrtInvss.MulScalar(scaling)
+	}
+	LsqrtInvss = mpcObj.TruncVec(LsqrtInvss, dataBits, fracBits)
+
+	// Convert to matrix to simplify subsequent matrix multiplications
+	LsqrtInvDiagss := mpc_core.InitRMat(rtype.Zero(), ncov, ncov)
+	if pid > 0 {
+		for i := 0; i < ncov; i++ {
+			LsqrtInvDiagss[i][i] = LsqrtInvss[i].Copy()
+		}
+	}
+	LsqrtInvss, Lss = nil, nil
+
+	var varx, sx, sxx crypto.CipherVector
+	var vary, sy, sxy crypto.CipherMatrix
+	var nsnps, numCtx int
+	var outFilter []bool
+
+	// Project covariates out of y: ynew = (I - Q*Qᵀ)*ymat
+
+	var ZtY1ss mpc_core.RMat
+	if pid > 0 {
+		// Build [Yt; 1]
+		Yt1 := mat.NewDense(npheno+1, nrowsAll[pid], nil)
+		Yt1.Copy(Yt)
+
+		ones := Yt1.RawRowView(npheno)
+		for i := range ones {
+			ones[i] = 1
+		}
+
+		var ZtY1 mat.Dense
+		ZtY1.Mul(Zt, Yt1.T())
+		ZtY1.Scale(1.0/math.Sqrt(float64(nrowsTotal)), &ZtY1) // scaling by 1/sqrt(n)
+		ZtY1ss = mpc.DenseToRMat(rtype, &ZtY1, fracBits)
+	} else {
+		ZtY1ss = mpc_core.InitRMat(rtype.Zero(), ncov, npheno+1)
+	}
+
+	QtY1ss := mpcObj.SSMultMat(Vtss, ZtY1ss)
+	QtY1ss = mpcObj.TruncMat(QtY1ss, dataBits, fracBits)
+	QtY1ss = mpcObj.SSMultMat(LsqrtInvDiagss, QtY1ss)
+	QtY1ss = mpcObj.TruncMat(QtY1ss, dataBits, fracBits)
+
+	// Split into QtY and Qt1
+	QtYss := mpc_core.InitRMat(rtype.Zero(), ncov, npheno)
+	Qt1ss := mpc_core.InitRVec(rtype.Zero(), ncov)
+	if pid > 0 {
+		for i := 0; i < ncov; i++ {
+			for j := 0; j < npheno; j++ {
+				QtYss[i][j] = QtY1ss[i][j].Copy()
+			}
+			Qt1ss[i] = QtY1ss[i][npheno].Copy()
+		}
+	}
+	QtY1ss = nil
+
+	OnetQ := mpcObj.SSToCVec(cryptoParams, Qt1ss)
+	YtQ := mpcObj.SSToCMat(cryptoParams, QtYss.Transpose())
+	Qt1ss, QtYss = nil, nil
+
+	if pid == 0 { // TODO: Check consistency with pid > 0 branch
+		numCtx = mpcObj.Network.ReceiveInt(mpcObj.GetHubPid())
+		nsnps = mpcObj.Network.ReceiveInt(mpcObj.GetHubPid())
+
+		varx = crypto.CZeros(cryptoParams, numCtx)
+		sxx = crypto.CZeros(cryptoParams, numCtx)
+		vary = make(crypto.CipherMatrix, npheno)
+		for i := range vary {
+			vary[i] = crypto.CZeros(cryptoParams, 1)
+		}
+
+	} else { // pid > 0
+
+		// Compute sx, sxx, sxy, sy, syy
+		// sx = 1ᵀ(I - QQᵀ)X = 1ᵀX - (1ᵀQ)(QᵀX)
+		// sxx = diag(XᵀX) - diag((XᵀQ)(QᵀX))
+		// sxy = Yᵀ(I-QQᵀ)X = YᵀX - (YᵀQ)(QᵀX)
+
+		// In parallel:
+		// (1) Compute ZᵀX (then later compute B = QᵀX = LsqrtInvDiag * Vᵀ * (ZᵀX)/sqrt(n))
+		// (2) Compute YᵀX (for sxy = Yᵀ*X - (YᵀQ)B
+		// (3) Compute 1ᵀX (for sx = 1ᵀX - (1ᵀQ)B) --> Computed separately as dosageSum
+		// (4) Compute diag(XᵀX) (for sxx = diag(XᵀX) - diag(BᵀB)) --> Computed separately as dosageSqSum
+		// Note: if covAllOnes = true, then sx = sy = 0. Skip all calculations involving sx and sy.
+
+		matIn := mat.NewDense(ncov+npheno, nrowsAll[pid], nil)
+		matIn.Stack(Zt, Yt)
+
+		filtOut := make([][]bool, numBlocks)
+
+		log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Starting Multiplication with Genotype Matrix")
+
+		sxBlocks := make([]crypto.CipherMatrix, numBlocks)
+		sxxBlocks := make([]crypto.CipherMatrix, numBlocks)
+		sxyBlocks := make([]crypto.CipherMatrix, numBlocks)
+
+		for b := 0; b < numBlocks; b++ {
+			if !ast.general.IsBlockForAssocTest(b) {
+				log.LLvl1(time.Now().Format(time.RFC3339), "MatMult: block", b+1, "/", numBlocks, "skipped")
+			} else {
+				matOut, dosageSum, dosageSqSum, filt := ast.GenoBlockMultPlain(b, matIn)
+				if matOut == nil {
+					continue
+				}
+
+				ZtXloc, YtXloc := matOut[:ncov], matOut[ncov:]
+
+				scaling := math.Sqrt(nrowsTotalInv)
+				for i := range ZtXloc {
+					for j := range ZtXloc[i] {
+						ZtXloc[i][j] *= scaling
+					}
+				}
+
+				ZtXss := mpc_core.FloatToRMat(rtype, ZtXloc, fracBits)
+				QtXss := mpcObj.SSMultMat(Vtss, ZtXss)
+				QtXss = mpcObj.TruncMat(QtXss, dataBits, fracBits)
+				QtXss = mpcObj.SSMultMat(LsqrtInvDiagss, QtXss)
+				QtXss = mpcObj.TruncMat(QtXss, dataBits, fracBits)
+				B := mpcObj.SSToCMat(cryptoParams, QtXss)
+
+				YtXlocEnc, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, YtXloc)
+				OnetXloc, _ := crypto.EncryptFloatVector(cryptoParams, dosageSum)
+
+				YtX := mpcObj.Network.AggregateCMat(cryptoParams, YtXlocEnc)
+				OnetX := mpcObj.Network.AggregateCVec(cryptoParams, OnetXloc)
+
+				// Compute sx = 1ᵀ(I - QQᵀ)X
+				if covAllOnes {
+					sxBlocks[b] = crypto.CipherMatrix{crypto.CZeros(cryptoParams, len(B[0]))}
+					log.LLvl1(time.Now().Format(time.RFC3339), "sx set to zero")
+				} else {
+					tmp := CMultMatRowTimesRow(cryptoParams, crypto.CipherMatrix{OnetQ}, B, numThreads)
+					sxBlocks[b] = crypto.CipherMatrix{crypto.CSub(cryptoParams, OnetX, tmp[0])}
+				}
+
+				// Compute sxy = Yᵀ(I - QQᵀ)X
+				sxyBlocks[b] = crypto.CZeroMat(cryptoParams, npheno, len(B[0]))
+				if pid > 0 {
+					tmp := CMultMatRowTimesRow(cryptoParams, YtQ, B, numThreads)
+					for i := range sxyBlocks[b] {
+						sxyBlocks[b][i] = crypto.CSub(cryptoParams, YtX[i], tmp[i])
+					}
+				}
+
+				log.LLvl1(time.Now().Format(time.RFC3339), "block", b+1, "/", numBlocks, "computed B, sx, sxy")
+
+				// Compute sxx = diag(XᵀX) - diag(BᵀB)
+				var sx2 crypto.CipherVector
+				if dosageSqSum != nil {
+					sxxBlocks[b] = make(crypto.CipherMatrix, 1)
+					sxxBlocks[b][0], _ = crypto.EncryptFloatVector(cryptoParams, dosageSqSum)
+					sx2, _ = crypto.EncryptFloatVector(cryptoParams, dosageSum)
+				}
+
+				sx2 = mpcObj.Network.AggregateCVec(cryptoParams, sx2)
+				sx2 = crypto.CMultConstRescale(cryptoParams, sx2, math.Sqrt(nrowsTotalInv), true)
+
+				if pid == mpcObj.GetHubPid() {
+					cryptoParams.WithEvaluator(func(evaluator ckks.Evaluator) error {
+						for c := range B {
+							for j := range sxxBlocks[b][0] {
+								tmp := evaluator.MulRelinNew(B[c][j], B[c][j])
+								evaluator.Sub(sxxBlocks[b][0][j], tmp, sxxBlocks[b][0][j])
+							}
+						}
+						for j := range sxxBlocks[b][0] {
+							tmp := evaluator.MulRelinNew(sx2[j], sx2[j])
+							evaluator.Sub(sxxBlocks[b][0][j], tmp, sxxBlocks[b][0][j])
+						}
+						return nil
+					})
+				}
+
+				sxxBlocks[b][0] = mpcObj.Network.AggregateCVec(cryptoParams, sxxBlocks[b][0])
+
+				log.LLvl1(time.Now().Format(time.RFC3339), "block", b+1, "/", numBlocks, "computed sxx")
+
+				filtOut[b] = make([]bool, len(sxBlocks[b][0])*slots)
+				copy(filtOut[b], filt)
+			}
+		}
+
+		log.LLvl1(time.Now().Format(time.RFC3339), "All blocks processed")
+
+		sx = crypto.ConcatCipherMatrix(sxBlocks)[0]
+		sxy = crypto.ConcatCipherMatrix(sxyBlocks)
+		sxx = crypto.ConcatCipherMatrix(sxxBlocks)[0]
+		sxBlocks, sxxBlocks, sxyBlocks = nil, nil, nil
+
+		totLen := 0
+		for i := range filtOut {
+			totLen += len(filtOut[i])
+		}
+
+		outFilter = make([]bool, totLen)
+		outShift := 0
+		for i := range filtOut {
+			copy(outFilter[outShift:], filtOut[i])
+			outShift += len(filtOut[i])
+		}
+		filtOut = nil
+
+		numCtx = len(sx)
+		nsnps = SumBool(outFilter)
+
+		if pid == mpcObj.GetHubPid() {
+			mpcObj.Network.SendInt(numCtx, 0)
+			mpcObj.Network.SendInt(nsnps, 0)
+		}
+
+		log.LLvl1(time.Now().Format(time.RFC3339), "numCtx", numCtx, "numSnps", nsnps)
+
+		// Compute sy = 1ᵀY - (1ᵀQ)(QᵀY)
+		if covAllOnes {
+			sy = make(crypto.CipherMatrix, npheno)
+			for i := 0; i < npheno; i++ {
+				sy[i] = crypto.CZeros(cryptoParams, 1)
+			}
+			log.LLvl1(time.Now().Format(time.RFC3339), "sy set to zero")
+		} else {
+			sy = make(crypto.CipherMatrix, npheno)
+			for i := 0; i < npheno; i++ {
+				Ysum := floats.Sum(Yt.RawRowView(i))
+				OnetYloc := crypto.CipherVector{crypto.EncryptFloat(cryptoParams, Ysum)}
+				OnetY := mpcObj.Network.AggregateCVec(cryptoParams, OnetYloc)
+				ct := crypto.InnerProd(cryptoParams, OnetQ, YtQ[i])
+				sy[i] = crypto.CSub(cryptoParams, OnetY, crypto.CipherVector{ct})
+			}
+		}
+
+		// Compute syy = diag(YᵀY) - diag((YᵀQ)(QᵀY))
+		syy := make(crypto.CipherMatrix, npheno)
+		for i := 0; i < npheno; i++ {
+			YsqSum := floats.Norm(Yt.RawRowView(i), 2)
+			YsqSum *= YsqSum
+			YtYloc := crypto.CipherVector{crypto.EncryptFloat(cryptoParams, YsqSum)}
+			YtY := mpcObj.Network.AggregateCVec(cryptoParams, YtYloc)
+			ct := crypto.InnerProd(cryptoParams, YtQ[i], YtQ[i])
+			syy[i] = crypto.CSub(cryptoParams, YtY, crypto.CipherVector{ct})
+		}
+
+		log.LLvl1(time.Now().Format(time.RFC3339), "Computed sy/syy")
+
+		totalInds := 0
+		for _, v := range nrowsAll {
+			totalInds += v
+		}
+
+		sqrtinvn := 1.0 / math.Sqrt(float64(totalInds))
+		if !covAllOnes {
+			sx = crypto.CMultConst(cryptoParams, sx, sqrtinvn, true) // sx / sqrt(n)
+
+			varx = crypto.CMult(cryptoParams, sx, sx)   // sx * sx / n
+			varx = crypto.CSub(cryptoParams, sxx, varx) // varx = sxx - (sx * sx / n)
+
+			vary = make(crypto.CipherMatrix, npheno)
+			for i := 0; i < npheno; i++ {
+				sy[i] = crypto.CMultConst(cryptoParams, sy[i], sqrtinvn, true) // sy[i] / sqrt(n)
+				vary[i] = crypto.CMult(cryptoParams, sy[i], sy[i])             // sy[i] * sy[i] / n
+				vary[i] = crypto.CSub(cryptoParams, syy[i], vary[i])           // vary[i] = syy[i] - (sy[i]*sy[i]/n)
+			}
+		} else {
+			varx = sxx
+			vary = syy
+		}
+
+		if debug {
+			writeFilterToFile(ast.general.CachePath("xfilt.bin"), outFilter, true)
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{sx}, len(sx)*slots, -1, ast.general.CachePath("sx.txt"))       // sx / sqrt(n)
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{sxx}, len(sxx)*slots, -1, ast.general.CachePath("sxx.txt"))    // sxx
+			SaveMatrixToFile(cryptoParams, mpcObj, sy, 1, -1, ast.general.CachePath("sy.txt"))                                        // sy / sqrt(n)
+			SaveMatrixToFile(cryptoParams, mpcObj, syy, 1, -1, ast.general.CachePath("syy.txt"))                                      // syy
+			SaveMatrixToFile(cryptoParams, mpcObj, sxy, len(sxy[0])*slots, -1, ast.general.CachePath("sxy.txt"))                      // sxy
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{varx}, len(varx)*slots, -1, ast.general.CachePath("varx.txt")) // sxx - (sx*sx/n)
+			SaveMatrixToFile(cryptoParams, mpcObj, vary, 1, -1, ast.general.CachePath("vary.txt"))                                    // syy - (sy*sy/n)
+		}
+	}
+
+	log.LLvl1(time.Now().Format(time.RFC3339), "AssertSync")
+	mpcObj.AssertSync()
+
+	stdinvx, stdinvy := ComputeStdInv(cryptoParams, mpcPar, varx, vary, nsnps, outFilter, debug)
+	log.LLvl1(time.Now().Format(time.RFC3339), "Computed stdev")
+
+	if debug && pid > 0 {
+		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{stdinvx}, nsnps, -1, ast.general.CachePath("stdinvx.txt")) // 1 / sqrt(sxx - (sx*sx/n))
+		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{stdinvy}, 1, -1, ast.general.CachePath("stdinvy.txt"))     // 1 / sqrt(syy - (sy*sy/n))
+	}
+
+	if pid > 0 {
+		stats := make(crypto.CipherMatrix, npheno)
+		for i := 0; i < npheno; i++ {
+			var s crypto.CipherVector
+			if !covAllOnes {
+				s = crypto.CMultScalar(cryptoParams, sx, sy[i][0]) // sx * sy[i] / n
+				s = crypto.CSub(cryptoParams, sxy[i], s)           // sxy[i] - (sx * sy[i] / n)
+			} else {
+				s = sxy[i]
+			}
+			s = crypto.CMult(cryptoParams, s, stdinvx)          // stdinvx * (sxy[i] - ...)
+			s = crypto.CMultScalar(cryptoParams, s, stdinvy[i]) // stdinvx * stdinvy[i] * ...
 			stats[i] = s
 		}
 
@@ -821,11 +1302,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
 }
 
 // Returns stdinvx (per-SNP) and stdinvy (one per phenotype)
-func (ast *AssocTest) computeStdInv(varx crypto.CipherVector, vary crypto.CipherMatrix, nsnps int, filter []bool) (crypto.CipherVector, crypto.CipherVector) {
-	debug := ast.general.config.Debug
-
-	cryptoParams := ast.general.cps
-	mpcPar := ast.general.mpcObj
+func ComputeStdInv(cryptoParams *crypto.CryptoParams, mpcPar mpc.ParallelMPC, varx crypto.CipherVector, vary crypto.CipherMatrix, nsnps int, filter []bool, debug bool) (crypto.CipherVector, crypto.CipherVector) {
 	mpcObj := mpcPar[0]
 	pid := mpcPar[0].GetPid()
 	rtype := mpcPar[0].GetRType()
@@ -891,11 +1368,6 @@ func (ast *AssocTest) computeStdInv(varx crypto.CipherVector, vary crypto.Cipher
 	for i := 0; i < npheno; i++ {
 		stdinvy[i] = mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{stdinvSS[nsnps+i]})
 		stdinvy[i] = crypto.Rebalance(cryptoParams, stdinvy[i])
-	}
-
-	if debug && pid > 0 {
-		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{stdinvx}, nsnps, -1, ast.general.CachePath("stdinvx.txt"))        // 1 / sqrt(sxx - (sx*sx/n))
-		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{stdinvy}, 1, -1, ast.general.CachePath("stdinvy.txt"))             // 1 / sqrt(syy - (sy*sy/n))
 	}
 
 	return stdinvx, stdinvy

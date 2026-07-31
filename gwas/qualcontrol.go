@@ -84,7 +84,7 @@ func (qc *QC) IndividualMissAndHetFilters() []bool {
 // gc: genotype counts (0, 1, 2)
 // miss: missing value counts
 func (qc *QC) SNPFilterWithPrecomputedStats(ac, gc [][]uint32, miss []uint32, useCache bool) []bool {
-	debug = qc.general.config.Debug
+	debug := qc.general.config.Debug
 	mpcPar := qc.general.mpcObj
 	pid := mpcPar[0].GetPid()
 	numSnpWindow := len(miss)
@@ -404,7 +404,7 @@ func (qc *QC) SNPMAFAndHWEFilters() []bool {
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Computing SNP filters (minor allele frequency and Hardy-Weinberg equilibrium)")
 
-	debug = qc.general.config.Debug
+	debug := qc.general.config.Debug
 	mpcPar := qc.general.mpcObj
 	rtype := mpcPar[0].GetRType()
 	pid := mpcPar[0].GetPid()

@@ -74,9 +74,6 @@ func readFilterFromFile(filename string, n int, isBinary bool) []bool {
 		panic(err)
 	}
 	defer file.Close()
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	reader := bufio.NewReader(file)
 
@@ -526,4 +523,30 @@ func SaveIntVectorToFile(filename string, x []int) {
 	}
 
 	writer.Flush()
+}
+
+func DenseFrom2D(x [][]float64) (*mat.Dense, error) {
+	if len(x) == 0 {
+		return nil, fmt.Errorf("empty matrix")
+	}
+
+	r := len(x)
+	c := len(x[0])
+	if c == 0 {
+		return nil, fmt.Errorf("empty rows")
+	}
+
+	data := make([]float64, r*c)
+
+	for i, row := range x {
+		if len(row) != c {
+			return nil, fmt.Errorf(
+				"row %d has length %d; expected %d",
+				i, len(row), c,
+			)
+		}
+		copy(data[i*c:(i+1)*c], row)
+	}
+
+	return mat.NewDense(r, c, data), nil
 }

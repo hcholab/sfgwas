@@ -114,10 +114,10 @@ func RunGWAS() {
 	case "qc":
 		prot.Phase1()
 	case "pca":
-		_ = prot.Phase2()
+		_, _ = prot.Phase2()
 	case "qc+pca", "qcpca":
 		prot.Phase1()
-		_ = prot.Phase2()
+		_, _ = prot.Phase2()
 	default:
 		panic(fmt.Sprintf("Unknown RUN_STAGE: %q (expected one of: all, qc, pca, qc+pca)", runStage))
 	}

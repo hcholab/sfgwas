@@ -71,9 +71,6 @@ func SaveIntVectorToFile(filename string, x []int) {
 		panic(err)
 	}
 	defer file.Close()
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	writer := bufio.NewWriter(file)
 

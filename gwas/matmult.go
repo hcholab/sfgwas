@@ -623,6 +623,20 @@ func ToBlockMatrix(A *mat.Dense, d int) BlockMatrix {
 	return out
 }
 
+func BlockToDense(b Block, dst []float64) *mat.Dense {
+	r, c := b.Dims()
+	if dst == nil || len(dst) < r*c {
+		dst = make([]float64, r*c)
+	}
+	data := dst
+	for i := 0; i < r; i++ {
+		for j := 0; j < c; j++ {
+			data[i*c+j] = b.At(i, j)
+		}
+	}
+	return mat.NewDense(r, c, data)
+}
+
 // Return if a diagonal vector exists without extracting elements
 func GetDiagBool(X Block, dim int, index int) bool {
 	r, c := X.Dims()
@@ -1233,6 +1247,138 @@ func MatMult4StreamCompute(cryptoParams *crypto.CryptoParams, A crypto.CipherMat
 	return out
 }
 
+func MatMult4StreamPlain(A *mat.Dense, gfs *GenoFileStream, computeSquaredSum bool, nproc int) ([][]float64, []float64, []float64) {
+	gfs.Reset() // Reset to beginning of file just in case
+
+	nrow, ncol := gfs.NumRowsToKeep(), gfs.NumColsToKeep()
+	if nproc <= 0 { // If nproc is non-positive, use all cores
+		nproc = runtime.GOMAXPROCS(0)
+	}
+
+	s, samples := A.Dims()
+	slots := 8192 // For consistency with ciphertext routines (MatMult4Stream)
+
+	if samples != int(nrow) {
+		log.Fatalf("dimension mismatch: %d samples in phenotype/covariate matrix, expected %d based on genotype matrix", samples, nrow)
+	}
+
+	m_ct := ((ncol - 1) / uint64(slots)) + 1
+	numBlockRows := ((nrow - 1) / uint64(slots)) + 1
+
+	var sqSum, sum []float64
+	if computeSquaredSum {
+		sqSum = make([]float64, ncol)
+		sum = make([]float64, ncol)
+	}
+
+	// Slice A into blocks of slots columns each
+	Ablocks := make([]*mat.Dense, numBlockRows)
+	for bi := 0; bi < int(numBlockRows); bi++ {
+		j1 := bi * slots
+		j2 := Min((bi+1)*slots, samples)
+		Ablocks[bi] = A.Slice(0, s, j1, j2).(*mat.Dense)
+	}
+
+	out := make([][]float64, s)
+	for i := range out {
+		out[i] = make([]float64, int(ncol))
+	}
+
+	for bi := 0; bi < int(numBlockRows); bi++ {
+
+		log.LLvl1(time.Now().Format(time.RFC3339), "Block row", bi+1, "/", numBlockRows, "gathering submatrix")
+
+		BSlice := make([]BlockI8, m_ct)
+		nr := Min((bi+1)*slots, int(nrow)) - bi*slots
+		for ri := 0; ri < nr; ri++ {
+
+			// Read one row from file
+			row := gfs.NextRow()
+
+			// Replace missing with zeros
+			for rj := range row {
+				if row[rj] < 0 {
+					row[rj] = 0
+				}
+
+				if computeSquaredSum {
+					sqSum[rj] += float64(row[rj] * row[rj])
+					sum[rj] += float64(row[rj])
+				}
+			}
+
+			// Add slice to each block matrix
+			for bj := range BSlice {
+				j1 := bj * slots
+				j2 := Min((bj+1)*slots, int(ncol))
+				nc := j2 - j1
+				if ri == 0 {
+					BSlice[bj] = NewBlockI8(nr, nc)
+				}
+				BSlice[bj].data[ri] = row[j1:j2]
+			}
+		}
+
+		blockVec := make(BlockVector, m_ct)
+		for bj := range blockVec {
+			blockVec[bj] = Block(BSlice[bj])
+		}
+
+		log.LLvl1(time.Now().Format(time.RFC3339), "Num procs", nproc)
+
+		log.LLvl1(time.Now().Format(time.RFC3339), "Block row", bi+1, "/", numBlockRows, "Multiplying blocks")
+
+		jobChannels := make([]chan int, nproc)
+		for i := range jobChannels {
+			jobChannels[i] = make(chan int, 64)
+		}
+
+		// Job dispatcher
+		go func() {
+			index := 0
+			for bj := range blockVec {
+				jobChannels[index%nproc] <- bj
+				index++
+			}
+
+			for _, c := range jobChannels {
+				close(c)
+			}
+		}()
+
+		// Worker pool for multiplying blocks
+		var workerGroup sync.WaitGroup
+		for thread := 0; thread < nproc; thread++ {
+			workerGroup.Add(1)
+			go func(thread int) {
+				defer workerGroup.Done()
+
+				buffer := make([]float64, slots*slots)
+				for bj := range jobChannels[thread] {
+
+					X := BlockToDense(blockVec[bj], buffer)
+
+					var AX mat.Dense
+					AX.Mul(Ablocks[bi], X)
+
+					colOffset := bj * slots
+					rows, _ := AX.Dims()
+					for i := 0; i < rows; i++ {
+						row := AX.RawRowView(i)
+						n := Min(len(row), len(out[i])-colOffset)
+						for j := 0; j < n; j++ {
+							out[i][colOffset+j] += row[j]
+						}
+					}
+				}
+			}(thread)
+		}
+		workerGroup.Wait()
+	}
+
+	return out, sum, sqSum
+}
+
 func MatMult4Stream(cryptoParams *crypto.CryptoParams, A crypto.CipherMatrix, gfs *GenoFileStream, maxLevel int, computeSquaredSum bool, nproc int) (crypto.CipherMatrix, []float64, []float64) {
 	gfs.Reset() // Reset to beginning of file just in case
 
@@ -1674,4 +1820,47 @@ func CPMatMult4V2CachedB(cryptoParams *crypto.CryptoParams, A crypto.CipherMatri
 		}
 	}
 	return out
+}
+
+// TODO: TEST!
+// Matrix multiplication between two row encrypted matrices N x M
+// Result size: len(N) by numColsM
+func CMultMatRowTimesRow(cryptoParams *crypto.CryptoParams, N, M crypto.CipherMatrix, numThreads int) crypto.CipherMatrix {
+
+	slots := cryptoParams.GetSlots()
+
+	result := crypto.CZeroMat(cryptoParams, len(N), len(M[0]))
+
+	vparallelize := Max(1, int(math.Ceil(float64(len(M))/float64(numThreads))))
+	mutexes := make([]sync.Mutex, len(result))
+	wg := sync.WaitGroup{}
+
+	for startMRow := 0; startMRow < len(M); startMRow += vparallelize {
+		wg.Add(1)
+		go func(start int) {
+			defer wg.Done()
+
+			end := Min(start+vparallelize, len(M))
+
+			for row := start; row < end; row++ {
+				ctid := row / slots
+				slotid := row % slots
+
+				for Nrow := 0; Nrow < len(N); Nrow++ {
+					elemRep := crypto.Mask(cryptoParams, N[Nrow][ctid], slotid, false)
+					elemRepCiph := crypto.InnerSumAll(cryptoParams, crypto.CipherVector{elemRep})
+					prod := crypto.CMultScalar(cryptoParams, M[row], elemRepCiph)
+
+					mutexes[Nrow].Lock()
+					result[Nrow] = crypto.CAdd(cryptoParams, prod, result[Nrow])
+					mutexes[Nrow].Unlock()
+				}
+			}
+
+		}(startMRow)
+
+	}
+	wg.Wait()
+
+	return result
 }

@@ -60,6 +60,7 @@ type Config struct {
 	UseCachedQC        bool `toml:"use_cached_qc"`
 	UseCachedPCA       bool `toml:"use_cached_pca"`
 	UseCachedCombinedQ bool `toml:"use_cached_combined_q"`
+	UsePlainMultPhase3 bool `toml:"use_plain_mult_phase_3"`
 	SkipPowerIter      bool `toml:"skip_power_iter"`
 	PCARestartIter     int  `toml:"restart_pca_from_iter"`
 
@@ -221,24 +222,24 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 		file, err := os.Open(config.GenoBlockSizeFile)
 
 		if err != nil {
-			log.Fatalf("failed to open:", config.GenoBlockSizeFile)
+			log.Fatalf("failed to open: %s", config.GenoBlockSizeFile)
 		}
 		scanner := bufio.NewScanner(file)
 		scanner.Split(bufio.ScanLines)
 
 		for i := 0; i < config.GenoNumBlocks; i++ {
 			if !scanner.Scan() {
-				log.Fatalf("not enough lines in", config.GenoBlockSizeFile)
+				log.Fatalf("not enough lines in %s", config.GenoBlockSizeFile)
 			}
 
 			genoBlockSizes[i], err = strconv.Atoi(scanner.Text())
 			if err != nil {
-				log.Fatalf("parse error:", config.GenoBlockSizeFile)
+				log.Fatalf("parse error: %s", config.GenoBlockSizeFile)
 			}
 		}
 
 		if scanner.Scan() {
-			log.Fatalf("too many lines in", config.GenoBlockSizeFile)
+			log.Fatalf("too many lines in %s", config.GenoBlockSizeFile)
 		}
 
 		file.Close()
@@ -315,7 +316,7 @@ func (g *ProtocolInfo) Phase1() {
 	net.PrintNetworkLog()
 }
 
-func (g *ProtocolInfo) Phase2() crypto.CipherMatrix {
+func (g *ProtocolInfo) Phase2() (crypto.CipherMatrix, *mat.Dense) {
 	net := g.mpcObj.GetNetworks()
 	pid := g.mpcObj[0].GetPid()
 
@@ -329,13 +330,13 @@ func (g *ProtocolInfo) Phase2() crypto.CipherMatrix {
 
 		if pid > 0 {
 			// TODO cache ciphertexts instead
-			mat := LoadMatrixFromFileFloat(pcaCacheFile, ',')
-			Qpca, _, _, _ = crypto.EncryptFloatMatrixRow(g.cps, mat)
+			QpcaPlain := LoadMatrixFromFileFloat(pcaCacheFile, ',')
+			Qpca, _, _, _ = crypto.EncryptFloatMatrixRow(g.cps, QpcaPlain)
 		} else {
 			Qpca = make(crypto.CipherMatrix, g.config.NumPCs)
 		}
 
-	} else if g.config.SkipPCA { // Qpca = nil
+	} else if g.config.SkipPCA { // Qpca = nil, QpcaPlain = nil
 
 		g.config.NumPCs = 0
 		g.gwasParams.SetNumPC(0)
@@ -357,23 +358,30 @@ func (g *ProtocolInfo) Phase2() crypto.CipherMatrix {
 	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Finished PCA")
 
 	net.PrintNetworkLog()
-	
+
 	outFile := g.OutPath("pca.txt")
 	for p := 1; p <= g.config.NumMainParties; p++ {
 		SaveMatrixToFile(g.cps, g.mpcObj[0], Qpca, g.gwasParams.numFiltInds[p], p, outFile)
 	}
 
-	return Qpca
+	var QpcaPlain *mat.Dense
+	if pid > 0 {
+		QpcaPlain = LoadMatrixFromFile(g.OutPath("pca.txt"), ',')
+	} else {
+		QpcaPlain = mat.NewDense(g.config.NumPCs, 0, nil)
+	}
+
+	return Qpca, QpcaPlain
 }
 
-func (g *ProtocolInfo) Phase3(Qpca crypto.CipherMatrix) {
+func (g *ProtocolInfo) Phase3(Qpca crypto.CipherMatrix, QpcaPlain *mat.Dense) {
 	net := g.mpcObj.GetNetworks()
 
 	net.ResetNetworkLog()
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: Starting Association Tests")
 
-	assoc, outFilter := g.ComputeAssocStatistics(Qpca)
+	assoc, outFilter := g.ComputeAssocStatistics(Qpca, QpcaPlain)
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Finished association tests")
 
@@ -413,8 +421,8 @@ func (g *ProtocolInfo) GWAS() {
 		g.Phase2()
 	} else {
 		g.Phase1()
-		Qpca := g.Phase2()
-		g.Phase3(Qpca)
+		Qpc, QpcPlain := g.Phase2()
+		g.Phase3(Qpc, QpcPlain)
 	}
 }
 
@@ -705,7 +713,12 @@ func (g *ProtocolInfo) PopulationStratification() crypto.CipherMatrix {
 
 }
 
-func (g *ProtocolInfo) ComputeAssocStatistics(Qpca crypto.CipherMatrix) (crypto.CipherMatrix, []bool) {
-	assocTest := g.InitAssociationTests(Qpca)
-	return assocTest.GetAssociationStats()
+func (g *ProtocolInfo) ComputeAssocStatistics(Qpca crypto.CipherMatrix, QpcaPlain *mat.Dense) (crypto.CipherMatrix, []bool) {
+	if g.config.UsePlainMultPhase3 {
+		assocTest := g.InitAssociationTestsPlainMult(QpcaPlain)
+		return assocTest.GetAssociationStatsPlainMult()
+	} else {
+		assocTest := g.InitAssociationTests(Qpca)
+		return assocTest.GetAssociationStats()
+	}
 }
