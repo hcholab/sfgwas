@@ -48,6 +48,7 @@ type Config struct {
 	NumInds    []int `toml:"num_inds"`
 	NumSnps    int   `toml:"num_snps"`
 	NumCovs    int   `toml:"num_covs"`
+	NumPheno   int   `toml:"num_pheno"`
 	CovAllOnes bool  `toml:"cov_all_ones"`
 
 	ItersPerEval  int `toml:"iter_per_eigenval"`
@@ -268,7 +269,7 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 		log.LLvl1(time.Now().Format(time.RFC3339), "First few SNP positions:", pos[:5])
 	}
 
-	gwasParams := InitGWASParams(config.NumInds, config.NumSnps, config.NumCovs, config.NumPCs, config.SnpDistThres)
+	gwasParams := InitGWASParams(config.NumInds, config.NumSnps, config.NumCovs, config.NumPCs, config.NumPheno, config.SnpDistThres)
 
 	return &ProtocolInfo{
 		mpcObj: mpcEnv, // One MPC object for each thread
@@ -368,7 +369,7 @@ func (g *ProtocolInfo) Phase2() (crypto.CipherMatrix, *mat.Dense) {
 	if pid > 0 {
 		QpcaPlain = LoadMatrixFromFile(g.OutPath("pca.txt"), ',')
 	} else {
-		QpcaPlain = mat.NewDense(g.config.NumPCs, 0, nil)
+		QpcaPlain = mat.NewDense(g.config.NumPCs, 1, nil)
 	}
 
 	return Qpca, QpcaPlain

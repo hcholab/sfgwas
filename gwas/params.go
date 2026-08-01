@@ -15,6 +15,7 @@ type GWASParams struct {
 	numSnps    int
 	numSnpsPCA int
 	numPCs     int
+	numPheno   int
 
 	numFiltInds []int
 	numFiltSnps int
@@ -27,12 +28,13 @@ type GWASParams struct {
 	runPCA bool // LMM or PCA
 }
 
-func InitGWASParams(numInds []int, numSnps, numCovs, numPCs, minSnpDist int) *GWASParams {
+func InitGWASParams(numInds []int, numSnps, numCovs, numPCs, numPheno, minSnpDist int) *GWASParams {
 	gwasParams := &GWASParams{
 		numInds:    numInds,
 		numSnps:    numSnps,
 		numCovs:    numCovs,
 		numPCs:     numPCs,
+		numPheno:   numPheno,
 		minSnpDist: uint64(minSnpDist),
 	}
 	return gwasParams
@@ -70,8 +72,16 @@ func (gwasParams *GWASParams) NumPC() int {
 	return gwasParams.numPCs
 }
 
+func (gwasParams *GWASParams) NumPheno() int {
+	return gwasParams.numPheno
+}
+
 func (gwasParams *GWASParams) SetNumPC(numPCs int) {
 	gwasParams.numPCs = numPCs
+}
+
+func (gwasParams *GWASParams) SetNumPheno(numPheno int) {
+	gwasParams.numPheno = numPheno
 }
 
 func (gwasParams *GWASParams) MinSnpDistThreshold() uint64 {

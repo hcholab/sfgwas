@@ -68,38 +68,50 @@ func (g *ProtocolInfo) InitAssociationTestsPlainMult(QpcPlain *mat.Dense) *Assoc
 	pid := g.mpcObj[0].GetPid()
 	gwasParams := g.gwasParams
 	npc := gwasParams.numPCs
+	ncov := gwasParams.numCovs
+	npheno := gwasParams.numPheno
 
-	// Row-major representation: rows correspond to phenotypes/covariates, columns correspond to individuals
-	// These matrices will never be encoded as plain/ciphertexts in this version
+	if pid > 0 && QpcPlain == nil {
+		log.Fatal("Plaintext Qpca has not been provided")
+	}
+
 	var phenoPlain *mat.Dense
 	var covPcPlain *mat.Dense
 
 	if pid > 0 {
+		// Row-major representation: rows correspond to phenotypes/covariates, columns correspond to individuals
+		// These matrices will never be encoded as plain/ciphertexts in this version
 		phenoPlain = mat.DenseCopyOf(g.pheno.T()) // Rows correspond to phenotypes
 		covPlain := mat.DenseCopyOf(g.cov.T())    // Rows correspond to covariates
 
+		nsample := gwasParams.numFiltInds[pid]
+
+		phenoRows, phenoCols := phenoPlain.Dims()
 		covRows, covCols := covPlain.Dims()
 		qpcRows, qpcCols := QpcPlain.Dims()
 
+		if phenoRows != npheno {
+			log.Fatalf("phenoPlain has %d rows; expected npheno=%d", phenoRows, npheno)
+		}
+
+		if covRows != ncov {
+			log.Fatalf("covPlain has %d rows; expected ncov=%d", covRows, ncov)
+		}
+
 		if qpcRows != npc {
-			log.Fatalf("InitAssociationTestsPlain: QpcPlain has %d rows; expected npc=%d", qpcRows, npc)
+			log.Fatalf("QpcPlain has %d rows; expected npc=%d", qpcRows, npc)
 		}
 
-		if qpcCols != covCols {
-			log.Fatalf("InitAssociationTestsPlain: QpcPlain has %d columns; expected %d individuals", qpcCols, covCols)
+		if qpcCols != nsample || covCols != nsample || phenoCols != nsample {
+			log.Fatalf("Inconsistent local sample count (expected %d; Qpc %d, cov %d, pheno %d)", nsample, qpcCols, covCols, phenoCols)
 		}
 
-		covPcPlain = mat.NewDense(covRows+qpcRows, covCols, nil)
+		covPcPlain = mat.NewDense(ncov+npc, nsample, nil)
 		covPcPlain.Stack(covPlain, QpcPlain)
 
-		npheno, _ := phenoPlain.Dims()
-		r, c := covPcPlain.Dims()
-		log.LLvl1(time.Now().Format(time.RFC3339), "Pheno count:", npheno)
-		log.LLvl1(time.Now().Format(time.RFC3339), "Cov dims (includes PCs):", r, "features", c, "samples")
 	} else {
-		phenoPlain = mat.NewDense(0, 0, nil) // multiPhenoSize communicated at runtime
-		covPcPlain = mat.NewDense(gwasParams.NumCov()+npc, 0, nil)
-		log.LLvl1(time.Now().Format(time.RFC3339), "Cov dims (includes PCs):", gwasParams.NumCov()+npc, "features", 0, "samples")
+		phenoPlain = mat.NewDense(npheno, 1, nil)
+		covPcPlain = mat.NewDense(ncov+npc, 1, nil)
 	}
 
 	return &AssocTestPlainMult{
@@ -890,25 +902,28 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
 
 // Optimized version that assumes PCs are provided in plaintext.
 // Performs multiplications on local plaintext matrices to avoid expensive cipher-plain operations
-// on the genotype matrix, then corrects for covariates using the inverse covariance matrix
+// on the large genotype matrix. Corrects for covariates post-multiplication using the inverse covariance matrix
 func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatrix, []bool) {
 	debug := ast.general.config.Debug
 
-	covAllOnes := ast.general.config.CovAllOnes // Flag indicating whether cov includes an all-ones covariate
+	numThreads := ast.general.config.LocalNumThreads
 
 	cryptoParams := ast.general.cps
+	slots := cryptoParams.GetSlots()
+
 	mpcPar := ast.general.mpcObj
 	mpcObj := mpcPar[0]
 	fracBits := mpcObj.GetFracBits()
 	dataBits := mpcObj.GetDataBits()
 	useBoolean := mpcObj.GetBooleanShareFlag()
 	rtype := mpcObj.GetRType()
-	pid := mpcPar[0].GetPid()
-	gwasParams := ast.general.gwasParams
-	slots := cryptoParams.GetSlots()
-	numThreads := ast.general.config.LocalNumThreads
 
+	gwasParams := ast.general.gwasParams
 	numBlocks := ast.general.config.GenoNumBlocks
+
+	covAllOnes := ast.general.config.CovAllOnes // Flag indicating whether cov includes an all-ones covariate
+
+	pid := mpcObj.GetPid()
 
 	/* Sample counts */
 	nrowsAll := gwasParams.FiltNumInds()
@@ -917,110 +932,109 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		nrowsTotal += nrowsAll[i]
 	}
 	nrowsTotalInv := 1.0 / float64(nrowsTotal)
+	nrowsTotalInvSqrt := math.Sqrt(nrowsTotalInv)
 
-	/* Setup covariates and  PCs */
-	// TODO: Ensure that QpcPlain is correctly set and matches the dimensions of the covariates.
-	var Zt *mat.Dense
-	var Yt *mat.Dense
+	/* Covariate (includes PCs) and pheno counts */
+	/* Data dimensions already verifed in protocol setup */
+	ncov := gwasParams.NumCov() + gwasParams.NumPC()
+	npheno := gwasParams.NumPheno()
 
-	var ncov, npheno int
-	if pid > 0 {
-		Zt = ast.covPc
-		Yt = mat.DenseCopyOf(ast.pheno.T())
+	Zt := ast.covPc
+	Yt := ast.pheno
 
-		ncov, _ = Zt.Dims()
-		npheno, _ = Yt.Dims()
+	if !covAllOnes {
+		log.LLvl1("Adding an all-ones covariate")
 
-		if !covAllOnes {
-			log.LLvl1("Adding an all-ones covariate")
+		_, cols := Zt.Dims()
 
-			rows, cols := Zt.Dims()
-			zWithIntercept := mat.NewDense(rows+1, cols, nil)
-			zWithIntercept.Copy(Zt)
-
-			intercept := zWithIntercept.RawRowView(rows)
-			for i := range intercept {
-				intercept[i] = 1
-			}
-
-			Zt = zWithIntercept
-			ncov += 1
-			covAllOnes = true
-		} else {
-			log.LLvl1("Warning: assumes the first covariate is all ones (if not, reorder input)")
+		ones := mat.NewDense(1, cols, nil)
+		for i := 0; i < cols; i++ {
+			ones.Set(0, i, 1)
 		}
 
-		// Communicate dimensions to Party 0
-		if pid == mpcObj.GetHubPid() {
-			mpcObj.Network.SendInt(ncov, 0)
-			mpcObj.Network.SendInt(npheno, 0)
-		}
-	} else { // pid == 0
-		ncov = mpcObj.Network.ReceiveInt(mpcObj.GetHubPid())
-		npheno = mpcObj.Network.ReceiveInt(mpcObj.GetHubPid())
+		covWithIntercept := mat.NewDense(ncov+1, cols, nil)
+		covWithIntercept.Stack(ones, Zt)
+
+		Zt = covWithIntercept
+		ncov += 1
+		covAllOnes = true
+	} else {
+		log.LLvl1("Warning: assumes the first covariate is all ones (if not, reorder input)")
 	}
+
+	log.LLvl1(time.Now().Format(time.RFC3339), "Phenotype count:", npheno)
+	log.LLvl1(time.Now().Format(time.RFC3339), "Covariate count (including PCs and intercept):", ncov)
+	log.LLvl1(time.Now().Format(time.RFC3339), "Local individual count:", nrowsAll)
+	log.LLvl1(time.Now().Format(time.RFC3339), "Total individual count:", nrowsTotal)
 
 	/* Compute S of (Zt*Z)^{-1} = St*S (dims: ncov-by-ncov) */
 
 	var tmp mat.SymDense
-	if pid > 0 {
-		tmp.SymOuterK(1.0/math.Sqrt(float64(nrowsTotal)), Zt) // Scale Zt*Z by 1/sqrt(n)
-	}
-	var ZtZss mpc_core.RMat
-	if pid > 0 {
-		ZtZss = mpc.DenseToRMat(rtype, &tmp, fracBits)
-	} else {
-		ZtZss = mpc_core.InitRMat(rtype.Zero(), ncov, ncov)
-	}
+	tmp.SymOuterK(nrowsTotalInvSqrt, Zt) // Scale Zt*Z by 1/sqrt(n)
+	ZtZss := mpc.DenseToRMat(rtype, &tmp, fracBits)
 	tmp.Reset()
 
-	// ZtZ now contains this party's shares of the implicitly aggregated ZᵀZ
+	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Starting calculation of covariate correction factor")
+
+	log.LLvl1(time.Now().Format(time.RFC3339), "Calculating inverse of covariate covariance matrix: started")
 
 	Vtss, Lss := mpcObj.EigenDecomp(ZtZss)
 	_, LsqrtInvss := mpcObj.SqrtAndSqrtInverse(Lss, useBoolean)
 
-	// Let S = diag(LsqrtInv) * Vt / sqrt(sqrt(n))
-	// S*Zt = Qt where Q = QR(Z)
-	// Need to replace Qt with S*Zt in the subsequent computations
+	// Let: S = diag(LsqrtInv) * Vᵀ / sqrt(sqrt(n))
+	// Then: S * Zᵀ = Qᵀ where Q is an orthogonal basis of Z (column space)
+	// We replace Qᵀ with S * Zᵀ in subsequent computations
 
-	// We need a factor of 1/sqrt(sqrt(n)); later matmul contributes 1/sqrt(n).
-	// Pre-multiply by sqrt(sqrt(n)) here so the net factor becomes 1/sqrt(sqrt(n)).
-	if pid > 0 {
-		scaling := rtype.FromFloat64(math.Sqrt(math.Sqrt(float64(nrowsTotal))), fracBits)
-		LsqrtInvss.MulScalar(scaling)
-	}
+	// Important note on scaling: above requires a factor of 1/sqrt(sqrt(n))
+	// Later matrix mult contributes 1/sqrt(n), so we pre-multiply by sqrt(sqrt(n)) here
+	// Ensure that QᵀA for any A involves A pre-scaled by 1/sqrt(n)
+
+	scaling := rtype.FromFloat64(math.Sqrt(math.Sqrt(float64(nrowsTotal))), fracBits)
+	LsqrtInvss.MulScalar(scaling)
 	LsqrtInvss = mpcObj.TruncVec(LsqrtInvss, dataBits, fracBits)
 
 	// Convert to matrix to simplify subsequent matrix multiplications
 	LsqrtInvDiagss := mpc_core.InitRMat(rtype.Zero(), ncov, ncov)
-	if pid > 0 {
-		for i := 0; i < ncov; i++ {
-			LsqrtInvDiagss[i][i] = LsqrtInvss[i].Copy()
-		}
+	for i := 0; i < ncov; i++ {
+		LsqrtInvDiagss[i][i] = LsqrtInvss[i].Copy()
 	}
-	LsqrtInvss, Lss = nil, nil
+
+	// Also prepare ciphertext versions
+	Vt := mpcObj.SSToCMat(cryptoParams, Vtss)
+	LsqrtInv := crypto.CZeros(cryptoParams, len(LsqrtInvss)) // one ciphertext per eigenvalue
+	for i := range LsqrtInv {
+		LsqrtInv[i] = mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{LsqrtInvss[i]})
+		LsqrtInv[i] = crypto.InnerSumAll(cryptoParams, crypto.CipherVector{LsqrtInv[i]})
+	}
+	// TODO: Check that ciphertexts in LsqrtInv include corresponding eigenvalue in every slot
+
+	// At this stage, we will only use LsqrtInvDiagss and Vtss for projecting out the covariates
+	ZtZss, Lss, LsqrtInvss, LsqrtInvss = nil, nil, nil, nil
+
+	log.LLvl1(time.Now().Format(time.RFC3339), "Calculating inverse of covariate covariance matrix: finished")
 
 	var varx, sx, sxx crypto.CipherVector
 	var vary, sy, sxy crypto.CipherMatrix
 	var nsnps, numCtx int
 	var outFilter []bool
 
-	// Project covariates out of y: ynew = (I - Q*Qᵀ)*ymat
-
 	var ZtY1ss mpc_core.RMat
 	if pid > 0 {
 		// Build [Yt; 1]
 		Yt1 := mat.NewDense(npheno+1, nrowsAll[pid], nil)
-		Yt1.Copy(Yt)
 
-		ones := Yt1.RawRowView(npheno)
-		for i := range ones {
-			ones[i] = 1
+		_, cols := Yt.Dims()
+
+		ones := mat.NewDense(1, cols, nil)
+		for i := 0; i < cols; i++ {
+			ones.Set(0, i, 1)
 		}
+
+		Yt1.Stack(Yt, ones)
 
 		var ZtY1 mat.Dense
 		ZtY1.Mul(Zt, Yt1.T())
-		ZtY1.Scale(1.0/math.Sqrt(float64(nrowsTotal)), &ZtY1) // scaling by 1/sqrt(n)
+		ZtY1.Scale(nrowsTotalInvSqrt, &ZtY1) // scaling by 1/sqrt(n)
 		ZtY1ss = mpc.DenseToRMat(rtype, &ZtY1, fracBits)
 	} else {
 		ZtY1ss = mpc_core.InitRMat(rtype.Zero(), ncov, npheno+1)
@@ -1032,21 +1046,21 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	QtY1ss = mpcObj.TruncMat(QtY1ss, dataBits, fracBits)
 
 	// Split into QtY and Qt1
-	QtYss := mpc_core.InitRMat(rtype.Zero(), ncov, npheno)
-	Qt1ss := mpc_core.InitRVec(rtype.Zero(), ncov)
+	YtQss := mpc_core.InitRMat(rtype.Zero(), npheno, ncov)
+	OnetQss := mpc_core.InitRVec(rtype.Zero(), ncov)
 	if pid > 0 {
 		for i := 0; i < ncov; i++ {
 			for j := 0; j < npheno; j++ {
-				QtYss[i][j] = QtY1ss[i][j].Copy()
+				YtQss[j][i] = QtY1ss[i][j].Copy()
 			}
-			Qt1ss[i] = QtY1ss[i][npheno].Copy()
+			OnetQss[i] = QtY1ss[i][npheno].Copy()
 		}
 	}
 	QtY1ss = nil
 
-	OnetQ := mpcObj.SSToCVec(cryptoParams, Qt1ss)
-	YtQ := mpcObj.SSToCMat(cryptoParams, QtYss.Transpose())
-	Qt1ss, QtYss = nil, nil
+	OnetQ := mpcObj.SSToCVec(cryptoParams, OnetQss)
+	YtQ := mpcObj.SSToCMat(cryptoParams, YtQss)
+	OnetQss, YtQss = nil, nil
 
 	if pid == 0 { // TODO: Check consistency with pid > 0 branch
 		numCtx = mpcObj.Network.ReceiveInt(mpcObj.GetHubPid())
@@ -1093,31 +1107,38 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 					continue
 				}
 
-				ZtXloc, YtXloc := matOut[:ncov], matOut[ncov:]
+				log.LLvl1(time.Now().Format(time.RFC3339), "block", b+1, "/", numBlocks, "computed genotype matrix mult")
 
-				scaling := math.Sqrt(nrowsTotalInv)
-				for i := range ZtXloc {
-					for j := range ZtXloc[i] {
-						ZtXloc[i][j] *= scaling
+				// Scale ZtX by 1/sqrt(n) to account for scaling in covariate correction
+				for i := 0; i < ncov; i++ {
+					for j := range matOut[i] {
+						matOut[i][j] *= nrowsTotalInvSqrt
 					}
 				}
 
-				ZtXss := mpc_core.FloatToRMat(rtype, ZtXloc, fracBits)
-				QtXss := mpcObj.SSMultMat(Vtss, ZtXss)
-				QtXss = mpcObj.TruncMat(QtXss, dataBits, fracBits)
-				QtXss = mpcObj.SSMultMat(LsqrtInvDiagss, QtXss)
-				QtXss = mpcObj.TruncMat(QtXss, dataBits, fracBits)
-				B := mpcObj.SSToCMat(cryptoParams, QtXss)
+				matOutEnc, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, matOut)
+				matOutEnc = mpcObj.Network.AggregateCMat(cryptoParams, matOutEnc)
 
-				YtXlocEnc, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, YtXloc)
-				OnetXloc, _ := crypto.EncryptFloatVector(cryptoParams, dosageSum)
+				numCtx = len(matOutEnc[0])
 
-				YtX := mpcObj.Network.AggregateCMat(cryptoParams, YtXlocEnc)
-				OnetX := mpcObj.Network.AggregateCVec(cryptoParams, OnetXloc)
+				ZtXscaled := matOutEnc[:ncov]
+				YtX := matOutEnc[ncov:]
+
+				OnetX, _ := crypto.EncryptFloatVector(cryptoParams, dosageSum)
+				OnetX = mpcObj.Network.AggregateCVec(cryptoParams, OnetX)
+
+				OnetXsq, _ := crypto.EncryptFloatVector(cryptoParams, dosageSqSum)
+				OnetXsq = mpcObj.Network.AggregateCVec(cryptoParams, OnetXsq)
+
+				// Compute B = QᵀX = diag(LsqrtInv) * Vᵀ * (ZᵀX)/sqrt(n)
+				B := CMultMatRowTimesRow(cryptoParams, Vt, ZtXscaled, numThreads)
+				for i := range B {
+					B[i] = crypto.CMultScalar(cryptoParams, B[i], LsqrtInv[i])
+				}
 
 				// Compute sx = 1ᵀ(I - QQᵀ)X
 				if covAllOnes {
-					sxBlocks[b] = crypto.CipherMatrix{crypto.CZeros(cryptoParams, len(B[0]))}
+					sxBlocks[b] = crypto.CipherMatrix{crypto.CZeros(cryptoParams, numCtx)}
 					log.LLvl1(time.Now().Format(time.RFC3339), "sx set to zero")
 				} else {
 					tmp := CMultMatRowTimesRow(cryptoParams, crypto.CipherMatrix{OnetQ}, B, numThreads)
@@ -1125,48 +1146,29 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 				}
 
 				// Compute sxy = Yᵀ(I - QQᵀ)X
-				sxyBlocks[b] = crypto.CZeroMat(cryptoParams, npheno, len(B[0]))
-				if pid > 0 {
-					tmp := CMultMatRowTimesRow(cryptoParams, YtQ, B, numThreads)
-					for i := range sxyBlocks[b] {
-						sxyBlocks[b][i] = crypto.CSub(cryptoParams, YtX[i], tmp[i])
-					}
+				sxyBlocks[b] = crypto.CZeroMat(cryptoParams, npheno, numCtx)
+				tmp := CMultMatRowTimesRow(cryptoParams, YtQ, B, numThreads)
+				for i := range sxyBlocks[b] {
+					sxyBlocks[b][i] = crypto.CSub(cryptoParams, YtX[i], tmp[i])
 				}
 
 				log.LLvl1(time.Now().Format(time.RFC3339), "block", b+1, "/", numBlocks, "computed B, sx, sxy")
 
 				// Compute sxx = diag(XᵀX) - diag(BᵀB)
-				var sx2 crypto.CipherVector
-				if dosageSqSum != nil {
-					sxxBlocks[b] = make(crypto.CipherMatrix, 1)
-					sxxBlocks[b][0], _ = crypto.EncryptFloatVector(cryptoParams, dosageSqSum)
-					sx2, _ = crypto.EncryptFloatVector(cryptoParams, dosageSum)
-				}
-
-				sx2 = mpcObj.Network.AggregateCVec(cryptoParams, sx2)
-				sx2 = crypto.CMultConstRescale(cryptoParams, sx2, math.Sqrt(nrowsTotalInv), true)
-
-				if pid == mpcObj.GetHubPid() {
-					cryptoParams.WithEvaluator(func(evaluator ckks.Evaluator) error {
-						for c := range B {
-							for j := range sxxBlocks[b][0] {
-								tmp := evaluator.MulRelinNew(B[c][j], B[c][j])
-								evaluator.Sub(sxxBlocks[b][0][j], tmp, sxxBlocks[b][0][j])
-							}
-						}
-						for j := range sxxBlocks[b][0] {
-							tmp := evaluator.MulRelinNew(sx2[j], sx2[j])
+				sxxBlocks[b] = crypto.CipherMatrix{OnetXsq}
+				cryptoParams.WithEvaluator(func(evaluator ckks.Evaluator) error {
+					for c := range B {
+						for j := range B[c] {
+							tmp := evaluator.MulRelinNew(B[c][j], B[c][j])
 							evaluator.Sub(sxxBlocks[b][0][j], tmp, sxxBlocks[b][0][j])
 						}
-						return nil
-					})
-				}
-
-				sxxBlocks[b][0] = mpcObj.Network.AggregateCVec(cryptoParams, sxxBlocks[b][0])
+					}
+					return nil
+				})
 
 				log.LLvl1(time.Now().Format(time.RFC3339), "block", b+1, "/", numBlocks, "computed sxx")
 
-				filtOut[b] = make([]bool, len(sxBlocks[b][0])*slots)
+				filtOut[b] = make([]bool, numCtx*slots)
 				copy(filtOut[b], filt)
 			}
 		}
@@ -1210,9 +1212,13 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 			log.LLvl1(time.Now().Format(time.RFC3339), "sy set to zero")
 		} else {
 			sy = make(crypto.CipherMatrix, npheno)
+			buffer := make([]float64, slots)
 			for i := 0; i < npheno; i++ {
 				Ysum := floats.Sum(Yt.RawRowView(i))
-				OnetYloc := crypto.CipherVector{crypto.EncryptFloat(cryptoParams, Ysum)}
+				for i := range buffer {
+					buffer[i] = Ysum
+				}
+				OnetYloc, _ := crypto.EncryptFloatVector(cryptoParams, buffer)
 				OnetY := mpcObj.Network.AggregateCVec(cryptoParams, OnetYloc)
 				ct := crypto.InnerProd(cryptoParams, OnetQ, YtQ[i])
 				sy[i] = crypto.CSub(cryptoParams, OnetY, crypto.CipherVector{ct})
@@ -1221,34 +1227,32 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 
 		// Compute syy = diag(YᵀY) - diag((YᵀQ)(QᵀY))
 		syy := make(crypto.CipherMatrix, npheno)
+		buffer := make([]float64, slots)
 		for i := 0; i < npheno; i++ {
 			YsqSum := floats.Norm(Yt.RawRowView(i), 2)
 			YsqSum *= YsqSum
-			YtYloc := crypto.CipherVector{crypto.EncryptFloat(cryptoParams, YsqSum)}
+			for j := range buffer {
+				buffer[j] = YsqSum
+			}
+			YtYloc, _ := crypto.EncryptFloatVector(cryptoParams, buffer)
 			YtY := mpcObj.Network.AggregateCVec(cryptoParams, YtYloc)
-			ct := crypto.InnerProd(cryptoParams, YtQ[i], YtQ[i])
+			ct := crypto.InnerProd(cryptoParams, YtQ[i], YtQ[i]) // Check if masking is needed before InnerProd
 			syy[i] = crypto.CSub(cryptoParams, YtY, crypto.CipherVector{ct})
 		}
 
-		log.LLvl1(time.Now().Format(time.RFC3339), "Computed sy/syy")
+		log.LLvl1(time.Now().Format(time.RFC3339), "Computed sy and syy")
 
-		totalInds := 0
-		for _, v := range nrowsAll {
-			totalInds += v
-		}
-
-		sqrtinvn := 1.0 / math.Sqrt(float64(totalInds))
 		if !covAllOnes {
-			sx = crypto.CMultConst(cryptoParams, sx, sqrtinvn, true) // sx / sqrt(n)
+			sx = crypto.CMultConst(cryptoParams, sx, nrowsTotalInvSqrt, true) // sx / sqrt(n)
 
 			varx = crypto.CMult(cryptoParams, sx, sx)   // sx * sx / n
 			varx = crypto.CSub(cryptoParams, sxx, varx) // varx = sxx - (sx * sx / n)
 
 			vary = make(crypto.CipherMatrix, npheno)
 			for i := 0; i < npheno; i++ {
-				sy[i] = crypto.CMultConst(cryptoParams, sy[i], sqrtinvn, true) // sy[i] / sqrt(n)
-				vary[i] = crypto.CMult(cryptoParams, sy[i], sy[i])             // sy[i] * sy[i] / n
-				vary[i] = crypto.CSub(cryptoParams, syy[i], vary[i])           // vary[i] = syy[i] - (sy[i]*sy[i]/n)
+				sy[i] = crypto.CMultConst(cryptoParams, sy[i], nrowsTotalInvSqrt, true) // sy[i] / sqrt(n)
+				vary[i] = crypto.CMult(cryptoParams, sy[i], sy[i])                      // sy[i] * sy[i] / n
+				vary[i] = crypto.CSub(cryptoParams, syy[i], vary[i])                    // vary[i] = syy[i] - (sy[i]*sy[i]/n)
 			}
 		} else {
 			varx = sxx
