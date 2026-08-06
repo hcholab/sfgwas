@@ -628,7 +628,9 @@ func BlockToDense(b Block, dst []float64) *mat.Dense {
 	if dst == nil || len(dst) < r*c {
 		dst = make([]float64, r*c)
 	}
-	data := dst
+	// mat.NewDense requires len(data) == r*c exactly, so a reusable scratch buffer
+	// (which callers size for the largest block) has to be resliced.
+	data := dst[:r*c]
 	for i := 0; i < r; i++ {
 		for j := 0; j < c; j++ {
 			data[i*c+j] = b.At(i, j)
@@ -1822,14 +1824,105 @@ func CPMatMult4V2CachedB(cryptoParams *crypto.CryptoParams, A crypto.CipherMatri
 	return out
 }
 
-// TODO: TEST!
-// Matrix multiplication between two row encrypted matrices N x M
-// Result size: len(N) by numColsM
-func CMultMatRowTimesRow(cryptoParams *crypto.CryptoParams, N, M crypto.CipherMatrix, numThreads int) crypto.CipherMatrix {
+// ---------------------------------------------------------------------------
+// Row-times-row ciphertext matrix multiplication (M2 method of
+// https://arxiv.org/pdf/2304.00129.pdf).
+//
+// Three implementations are kept side by side so they can be benchmarked against
+// each other; see tests/matmult_rowrow_bench_test.go. They are numerically
+// equivalent up to CKKS noise. CMultMatRowTimesRow below selects the one used in
+// production.
+//
+// Shared contract for all three:
+//
+//	N is n-by-k: element (i, j) lives in N[i][j/slots] at slot j%slots.
+//	M is k-by-m: it must have exactly k rows, each packed across len(M[0]) ciphertexts.
+//	The result is n-by-m, row-encrypted with len(M[0]) ciphertexts per row.
+//
+// Each consumes two levels: one to mask out a single element of N, one for the
+// product. Every slot of a replicated element is nonzero, so the padding slots of
+// M's last ciphertext are carried into the result scaled by N's elements; they
+// must be zero for the result's padding to stay zero. Inputs are assumed to be
+// level- and scale-uniform (as produced by encryption, aggregation, or a previous
+// matmul).
+// ---------------------------------------------------------------------------
 
+// CMultMatRowTimesRow is the variant used in production. Change the delegation
+// here to switch implementations after benchmarking.
+func CMultMatRowTimesRow(cryptoParams *crypto.CryptoParams, N, M crypto.CipherMatrix, numThreads int) crypto.CipherMatrix {
+	return CMultMatRowTimesRowV3(cryptoParams, N, M, numThreads)
+}
+
+// firstError records the first error reported by any of a group of goroutines.
+type firstError struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (f *firstError) record(err error) {
+	if err == nil {
+		return
+	}
+	f.mu.Lock()
+	if f.err == nil {
+		f.err = err
+	}
+	f.mu.Unlock()
+}
+
+func (f *firstError) get() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err
+}
+
+// parallelBlocks splits [0, n) into numThreads contiguous blocks and runs body on
+// each of them in parallel, returning once all have finished. Per-block cost is
+// uniform in every caller below, so a static partition needs no work stealing.
+func parallelBlocks(n, numThreads int, body func(start, end int)) {
+	blockSize := Max(1, int(math.Ceil(float64(n)/float64(numThreads))))
+	wg := sync.WaitGroup{}
+	for start := 0; start < n; start += blockSize {
+		wg.Add(1)
+		go func(s int) {
+			defer wg.Done()
+			body(s, Min(s+blockSize, n))
+		}(start)
+	}
+	wg.Wait()
+}
+
+// checkRowTimesRowDims validates the shared preconditions and returns the output
+// dimensions. Returns ok == false when either operand is empty.
+func checkRowTimesRowDims(cryptoParams *crypto.CryptoParams, N, M crypto.CipherMatrix) (nRows, inner, outCtx int, ok bool) {
+	nRows, inner = len(N), len(M)
+	if nRows == 0 || inner == 0 {
+		return 0, 0, 0, false
+	}
+	outCtx = len(M[0])
+
+	if maxInner := len(N[0]) * cryptoParams.GetSlots(); inner > maxInner {
+		panic(fmt.Sprintf("CMultMatRowTimesRow: shared dimension %d exceeds the %d values encoded per row of N", inner, maxInner))
+	}
+	if level := Min(N[0][0].Level(), M[0][0].Level()); level < 2 {
+		panic(fmt.Sprintf("CMultMatRowTimesRow: needs 2 levels, inputs are at level %d; refresh them first", level))
+	}
+	return nRows, inner, outCtx, true
+}
+
+// CMultMatRowTimesRowV1 is the original implementation, kept as the benchmarking
+// baseline. It parallelizes over the rows of M and accumulates into shared output
+// rows guarded by a per-row mutex, so goroutines contend on the same len(N) locks.
+// Every (i, j) pair re-encodes its own one-hot mask, and every product is rescaled
+// individually.
+//
+// Note: the CZeroMat call takes (nrows, ncols) but returns ncols rows of nrows
+// ciphertexts, so the arguments are the output's ciphertexts-per-row followed by
+// its row count.
+func CMultMatRowTimesRowV1(cryptoParams *crypto.CryptoParams, N, M crypto.CipherMatrix, numThreads int) crypto.CipherMatrix {
 	slots := cryptoParams.GetSlots()
 
-	result := crypto.CZeroMat(cryptoParams, len(N), len(M[0]))
+	result := crypto.CZeroMat(cryptoParams, len(M[0]), len(N))
 
 	vparallelize := Max(1, int(math.Ceil(float64(len(M))/float64(numThreads))))
 	mutexes := make([]sync.Mutex, len(result))
@@ -1863,4 +1956,195 @@ func CMultMatRowTimesRow(cryptoParams *crypto.CryptoParams, N, M crypto.CipherMa
 	wg.Wait()
 
 	return result
+}
+
+// CMultMatRowTimesRowV2 splits the computation into two global passes. The first
+// replicates every element of N across all slots, caching the full n-by-k grid;
+// the second computes the output, parallelized over the ciphertext index so that
+// no locking is needed. Products accumulate un-rescaled and are reduced once per
+// output ciphertext, and each one-hot mask is encoded once per column of N and
+// reused across its rows.
+//
+// The replication cache holds n*k ciphertexts for the duration of the call:
+// ~900 MiB at n = k = 20 on PN14QP438.
+func CMultMatRowTimesRowV2(cryptoParams *crypto.CryptoParams, N, M crypto.CipherMatrix, numThreads int) crypto.CipherMatrix {
+	slots := cryptoParams.GetSlots()
+	numThreads = Max(1, numThreads)
+
+	nRows, inner, outCtx, ok := checkRowTimesRowDims(cryptoParams, N, M)
+	if !ok {
+		return nil
+	}
+
+	var failure firstError
+
+	// Phase 1: replicate every element of N across all slots, parallel over the
+	// columns of N so the one-hot mask is encoded once per column.
+	rep := make([]crypto.CipherVector, nRows)
+	for i := range rep {
+		rep[i] = make(crypto.CipherVector, inner)
+	}
+
+	parallelBlocks(inner, numThreads, func(start, end int) {
+		onehot := make([]float64, slots)
+
+		for j := start; j < end; j++ {
+			ctid, slotid := j/slots, j%slots
+
+			onehot[slotid] = 1.0
+			mask, _ := crypto.EncodeFloatVector(cryptoParams, onehot)
+			onehot[slotid] = 0.0
+
+			err := cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+				for i := 0; i < nRows; i++ {
+					ct := eval.MulRelinNew(N[i][ctid], mask[0])
+					if err := eval.Rescale(ct, cryptoParams.Params.Scale(), ct); err != nil {
+						return err
+					}
+					replicateSlots(eval, ct, slots)
+					rep[i][j] = ct
+				}
+				return nil
+			})
+			if err != nil {
+				failure.record(err)
+				return
+			}
+		}
+	})
+	if err := failure.get(); err != nil {
+		panic(fmt.Sprintf("CMultMatRowTimesRowV2: masking N failed: %v", err))
+	}
+
+	// Phase 2: result[i][c] depends only on column c of M, so partitioning by c is
+	// lock-free and scales with the number of ciphertexts per row of M.
+	result := make(crypto.CipherMatrix, nRows)
+	for i := range result {
+		result[i] = make(crypto.CipherVector, outCtx)
+	}
+
+	parallelBlocks(outCtx, numThreads, func(start, end int) {
+		failure.record(cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+			for c := start; c < end; c++ {
+				for i := 0; i < nRows; i++ {
+					acc, err := accumulateColumn(eval, cryptoParams, M, rep[i], c, inner)
+					if err != nil {
+						return err
+					}
+					result[i][c] = acc
+				}
+			}
+			return nil
+		}))
+	})
+	if err := failure.get(); err != nil {
+		panic(fmt.Sprintf("CMultMatRowTimesRowV2: computing the output failed: %v", err))
+	}
+
+	return result
+}
+
+// CMultMatRowTimesRowV3 is V2 with the two passes nested inside a per-row loop, so
+// only the replicated elements of the row being computed are held at once: k
+// ciphertexts instead of n*k (~45 MiB rather than ~900 MiB at n = k = 20 on
+// PN14QP438). The number of homomorphic operations is identical to V2; the trade
+// is 2n synchronization barriers instead of 2, and one-hot masks re-encoded per
+// row (n*k encodes instead of k, ~1 ms each against ~10 ms ciphertext products).
+func CMultMatRowTimesRowV3(cryptoParams *crypto.CryptoParams, N, M crypto.CipherMatrix, numThreads int) crypto.CipherMatrix {
+	slots := cryptoParams.GetSlots()
+	numThreads = Max(1, numThreads)
+
+	nRows, inner, outCtx, ok := checkRowTimesRowDims(cryptoParams, N, M)
+	if !ok {
+		return nil
+	}
+
+	var failure firstError
+
+	result := make(crypto.CipherMatrix, nRows)
+	for i := range result {
+		result[i] = make(crypto.CipherVector, outCtx)
+	}
+
+	// Replicated elements of the row of N currently being computed; overwritten in
+	// full on every iteration.
+	rep := make(crypto.CipherVector, inner)
+
+	for i := 0; i < nRows; i++ {
+		parallelBlocks(inner, numThreads, func(start, end int) {
+			onehot := make([]float64, slots)
+
+			for j := start; j < end; j++ {
+				ctid, slotid := j/slots, j%slots
+
+				onehot[slotid] = 1.0
+				mask, _ := crypto.EncodeFloatVector(cryptoParams, onehot)
+				onehot[slotid] = 0.0
+
+				err := cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+					ct := eval.MulRelinNew(N[i][ctid], mask[0])
+					if err := eval.Rescale(ct, cryptoParams.Params.Scale(), ct); err != nil {
+						return err
+					}
+					replicateSlots(eval, ct, slots)
+					rep[j] = ct
+					return nil
+				})
+				if err != nil {
+					failure.record(err)
+					return
+				}
+			}
+		})
+		if err := failure.get(); err != nil {
+			panic(fmt.Sprintf("CMultMatRowTimesRowV3: masking row %d of N failed: %v", i, err))
+		}
+
+		parallelBlocks(outCtx, numThreads, func(start, end int) {
+			failure.record(cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+				for c := start; c < end; c++ {
+					acc, err := accumulateColumn(eval, cryptoParams, M, rep, c, inner)
+					if err != nil {
+						return err
+					}
+					result[i][c] = acc
+				}
+				return nil
+			}))
+		})
+		if err := failure.get(); err != nil {
+			panic(fmt.Sprintf("CMultMatRowTimesRowV3: computing row %d failed: %v", i, err))
+		}
+	}
+
+	return result
+}
+
+// replicateSlots copies the single surviving slot of ct across all of them, in
+// place. Equivalent to crypto.InnerSumAll on a one-ciphertext vector, but takes an
+// evaluator so the caller can hold one for the whole doubling loop instead of
+// reacquiring it from the pool per rotation.
+func replicateSlots(eval ckks.Evaluator, ct *ckks.Ciphertext, slots int) {
+	for rot := 1; rot < slots; rot *= 2 {
+		eval.Add(ct, eval.RotateNew(ct, rot), ct)
+	}
+}
+
+// accumulateColumn computes the inner product of column c of M with the replicated
+// elements rep. All products share a scale, so they are summed un-rescaled and
+// reduced once, rather than rescaled individually.
+func accumulateColumn(eval ckks.Evaluator, cryptoParams *crypto.CryptoParams, M crypto.CipherMatrix, rep crypto.CipherVector, c, inner int) (*ckks.Ciphertext, error) {
+	var acc *ckks.Ciphertext
+	for j := 0; j < inner; j++ {
+		prod := eval.MulRelinNew(M[j][c], rep[j])
+		if acc == nil {
+			acc = prod
+		} else {
+			eval.Add(acc, prod, acc)
+		}
+	}
+	if err := eval.Rescale(acc, cryptoParams.Params.Scale(), acc); err != nil {
+		return nil, err
+	}
+	return acc, nil
 }

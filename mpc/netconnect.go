@@ -323,7 +323,22 @@ func listen(l net.Listener) (net.Conn, error) {
 		// fmt.Println(err)
 		return nil, err
 	}
+	enableKeepAlive(c)
 	return c, nil
+}
+
+// enableKeepAlive turns on TCP keepalive so idle periods -- e.g. the several minutes of
+// pure local computation between one party's network round-trips and the next, common in
+// this protocol -- don't get silently reaped by an intermediate connection tracker
+// (conntrack, a restrictive firewall, a load balancer) with a shorter idle timeout than
+// that gap. Without this, the read/write calls in ReadFull/WriteFull have no way to
+// notice or prevent that: they simply panic on the next attempted use with an opaque EOF.
+// No-ops if conn isn't a *net.TCPConn (e.g. a SOCKS-proxied connection).
+func enableKeepAlive(conn net.Conn) {
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	}
 }
 
 // CloseChannel closes connection
@@ -361,6 +376,7 @@ func Connect(ip, port string) net.Conn {
 
 		if err == nil {
 			fmt.Println("Successfully connected to " + addr)
+			enableKeepAlive(c)
 			break
 		}
 

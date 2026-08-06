@@ -245,15 +245,6 @@ func RotateAndAdd(cryptoParams *CryptoParams, ct *ckks.Ciphertext, size int) *ck
 	return ctOut
 }
 
-func Rebalance(cryptoParams *CryptoParams, ct *ckks.Ciphertext) *ckks.Ciphertext {
-	if ct == nil {
-		return nil
-	}
-	ctOut := InnerSumAll(cryptoParams, CipherVector{ct})
-	ctOut = CMultConst(cryptoParams, CipherVector{ctOut}, 1/float64(cryptoParams.GetSlots()), false)[0]
-	return ctOut
-}
-
 func InnerSum(cryptoParams *CryptoParams, X CipherVector, Xsize int) *ckks.Ciphertext {
 	// Sum all the ciphertexts in vector (i.e vector sum)
 	vecsum := X[0].CopyNew().Ciphertext()

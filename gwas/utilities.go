@@ -135,14 +135,25 @@ func writeFilterToFile(filename string, filter []bool, isBinary bool) {
 		}
 	}
 
-	writer.Flush()
+	// bufio.Writer has a sticky error: if any earlier Write/WriteString above failed
+	// silently, Flush returns that same error here, so checking just this one call is
+	// enough to catch a truncated write anywhere in the loop above.
+	if err := writer.Flush(); err != nil {
+		panic(fmt.Sprintf("writeFilterToFile: flush failed for %s: %v", filename, err))
+	}
 }
 
-func FilterMatrixFilePgen(pgenPrefix string, nrows, ncols int, rowFiltFile, colNamesFile string, colStartPos int, colFilt []bool, outputFile string) {
+// nThreads caps how many threads THIS plink2 invocation may use. Matters when callers run
+// several of these concurrently (e.g. GenoBlockMultPlain's per-batch thread pool): plink2
+// defaults to using all available cores per invocation, so N concurrent calls with no cap
+// oversubscribe by a factor of N. Pass the same per-slot share (GOMAXPROCS/concurrency)
+// already computed for the surrounding Go-level parallelism; a purely sequential caller can
+// just pass its full thread budget.
+func FilterMatrixFilePgen(pgenPrefix string, nrows, ncols int, rowFiltFile, colNamesFile string, colStartPos int, colFilt []bool, outputFile string, nThreads int) {
 	colFiltFile := outputFile + ".colFilter.bin"
 	writeFilterToFile(colFiltFile, colFilt, true)
 
-	cmd := exec.Command("/bin/sh", "scripts/filterMatrixPgen.sh", pgenPrefix, strconv.Itoa(nrows), strconv.Itoa(ncols), rowFiltFile, colFiltFile, colNamesFile, strconv.Itoa(colStartPos), outputFile)
+	cmd := exec.Command("/bin/sh", "scripts/filterMatrixPgen.sh", pgenPrefix, strconv.Itoa(nrows), strconv.Itoa(ncols), rowFiltFile, colFiltFile, colNamesFile, strconv.Itoa(colStartPos), outputFile, strconv.Itoa(Max(1, nThreads)))
 	cout, e := cmd.CombinedOutput()
 	fmt.Print(string(cout))
 	if e != nil {
@@ -434,7 +445,14 @@ func SaveMatrixToFile(cps *crypto.CryptoParams, mpcObj *mpc.MPC, cm crypto.Ciphe
 				line[col] = fmt.Sprintf("%.6e", M.At(row, col))
 			}
 
-			f.WriteString(strings.Join(line, ",") + "\n")
+			// A dropped write here (e.g. a transient I/O hiccup on the underlying
+			// filesystem) previously failed silently: the file ends up with fewer rows
+			// than expected, "Saved data to..." still prints as if nothing went wrong,
+			// and the mismatch only surfaces later as a confusing dimension error on
+			// whatever unrelated code re-reads this file.
+			if _, err := f.WriteString(strings.Join(line, ",") + "\n"); err != nil {
+				panic(fmt.Sprintf("SaveMatrixToFile: write failed for %s at row %d/%d: %v", filename, row, rows, err))
+			}
 		}
 
 		f.Sync()
@@ -445,6 +463,10 @@ func SaveMatrixToFile(cps *crypto.CryptoParams, mpcObj *mpc.MPC, cm crypto.Ciphe
 
 }
 
+// SaveFloatMatrixToFile writes the transpose of x: one line per column of x.
+// Used for the debug dumps that expect samples along the rows. It does NOT
+// round-trip through LoadMatrixFromFileFloat; use SaveFloatMatrixToFileRowMajor
+// for that.
 func SaveFloatMatrixToFile(filename string, x [][]float64) {
 	file, err := os.Create(filename)
 	if err != nil {
@@ -464,7 +486,37 @@ func SaveFloatMatrixToFile(filename string, x [][]float64) {
 		writer.WriteString("\n")
 	}
 
-	writer.Flush()
+	if err := writer.Flush(); err != nil {
+		log.Fatalf("SaveFloatMatrixToFile: flush failed for %s: %v", filename, err)
+	}
+}
+
+// SaveFloatMatrixToFileRowMajor writes one line per row of x, so that
+// LoadMatrixFromFileFloat reads back an identical matrix. Values are written at
+// full float64 precision: the only caller is caching, where a cached run must
+// reproduce an uncached one exactly.
+func SaveFloatMatrixToFileRowMajor(filename string, x [][]float64) {
+	file, err := os.Create(filename)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+
+	for i := range x {
+		for j := range x[i] {
+			if j > 0 {
+				writer.WriteString(",")
+			}
+			writer.WriteString(strconv.FormatFloat(x[i][j], 'g', 17, 64))
+		}
+		writer.WriteString("\n")
+	}
+
+	if err := writer.Flush(); err != nil {
+		log.Fatalf("SaveFloatMatrixToFileRowMajor: flush failed for %s: %v", filename, err)
+	}
 }
 
 func SaveFloatVectorToFile(filename string, x []float64) {
@@ -480,7 +532,9 @@ func SaveFloatVectorToFile(filename string, x []float64) {
 		writer.WriteString(fmt.Sprintf("%.6e\n", x[i]))
 	}
 
-	writer.Flush()
+	if err := writer.Flush(); err != nil {
+		log.Fatalf("SaveFloatVectorToFile: flush failed for %s: %v", filename, err)
+	}
 }
 
 func LoadFloatVectorFromFile(filename string, n int) []float64 {
@@ -522,7 +576,9 @@ func SaveIntVectorToFile(filename string, x []int) {
 		writer.WriteString(fmt.Sprintf("%d\n", x[i]))
 	}
 
-	writer.Flush()
+	if err := writer.Flush(); err != nil {
+		log.Fatalf("SaveIntVectorToFile: flush failed for %s: %v", filename, err)
+	}
 }
 
 func DenseFrom2D(x [][]float64) (*mat.Dense, error) {

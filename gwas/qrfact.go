@@ -137,11 +137,15 @@ func NetDQRenc(cryptoParams *crypto.CryptoParams, mpcObj *mpc.MPC, A crypto.Ciph
 		alphaScaledSS = mpcObj.TruncVec(alphaScaledSS, dataBits, fracBits)
 
 		alphaScaled := mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{alphaScaledSS[0]})
-		alphaScaled = crypto.Rebalance(cryptoParams, alphaScaled)
+		if pid > 0 { // no share on party 0; SStoCiphertext left it nil
+			alphaScaled = crypto.InnerSumAll(cryptoParams, crypto.CipherVector{alphaScaled})
+		}
 		alphaScaled = crypto.Mask(cryptoParams, alphaScaled, slotid, false)
 
 		zNewSqrtInv := mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{zNewSqrtInvSS[0]})
-		zNewSqrtInv = crypto.Rebalance(cryptoParams, zNewSqrtInv)
+		if pid > 0 {
+			zNewSqrtInv = crypto.InnerSumAll(cryptoParams, crypto.CipherVector{zNewSqrtInv})
+		}
 
 		if debug {
 			log.LLvl1(time.Now().Format(time.RFC3339), "col", col,
