@@ -56,15 +56,17 @@ type Config struct {
 	NumOversample int `toml:"num_oversampling"`
 	NumPowerIters int `toml:"num_power_iters"`
 
-	SkipQC             bool `toml:"skip_qc"`
-	SkipPCA            bool `toml:"skip_pca"`
-	UseCachedQC        bool `toml:"use_cached_qc"`
-	UseCachedPCA       bool `toml:"use_cached_pca"`
-	UseCachedCombinedQ bool `toml:"use_cached_combined_q"`
-	UsePlainMultPhase3 bool `toml:"use_plain_mult_phase_3"`
-	UseEigenCovOrtho   bool `toml:"use_eigen_cov_ortho"`
-	SkipPowerIter      bool `toml:"skip_power_iter"`
-	PCARestartIter     int  `toml:"restart_pca_from_iter"`
+	SkipQC                 bool `toml:"skip_qc"`
+	SkipPCA                bool `toml:"skip_pca"`
+	UseCachedQC            bool `toml:"use_cached_qc"`
+	UseCachedPCA           bool `toml:"use_cached_pca"`
+	UseCachedCombinedQ     bool `toml:"use_cached_combined_q"`
+	UsePlainMultPhase3     bool `toml:"use_plain_mult_phase_3"`
+	UseEigenCovOrtho       bool `toml:"use_eigen_cov_ortho"`
+	SkipPowerIter          bool `toml:"skip_power_iter"`
+	UseCachedPowerIter     bool `toml:"use_cached_power_iter"`
+	PowerIterCacheInterval int  `toml:"power_iter_cache_interval"`
+	PCARestartIter         int  `toml:"restart_pca_from_iter"`
 
 	IndMissUB    float64 `toml:"imiss_ub"`
 	HetLB        float64 `toml:"het_lb"`
