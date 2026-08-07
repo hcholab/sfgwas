@@ -27,7 +27,7 @@ geno_file_format = "pgen"
 use_precomputed_geno_count = true
 
 ## Quality control parameters
-use_cached_qc = false
+use_cached_qc = true
 skip_qc = false
 imiss_ub = 1.0          # Unused if "pgen"
 het_lb = 0.0            # Unused if "pgen"
@@ -38,7 +38,7 @@ hwe_ub = 28.374
 snp_dist_thres = 100000
 
 ## PCA parameters
-use_cached_pca = false
+use_cached_pca = true
 use_cached_power_iter = false
 power_iter_cache_interval = 2    # checkpoint every Nth power iteration; <= 1 means every one
 skip_pca = false
@@ -62,6 +62,16 @@ use_plain_mult_phase_3 = true
 # (S = diag(1/sqrt(lambda))*V'), which can lose several percent of precision on small
 # eigenvalues of an ill-conditioned covariate matrix.
 use_eigen_cov_ortho = false
+# Only relevant when use_eigen_cov_ortho = false. Cholesky's S comes from decomposing the
+# covariate Gram matrix Z'Z, whose condition number is the square of Z's own -- unlike
+# legacy's direct QR on Z. For SNPs collinear with the covariate/PC space (e.g. ancestry
+# PCs in an admixed cohort), this can lose enough precision that sxx = diag(X'X) -
+# diag(B'B) catastrophically cancels, producing |r| far outside [-1,1]. Setting this to
+# true doubles fracBits/dataBits for just the Z'Z/Cholesky step (cheap: Z'Z is a small
+# ncov-by-ncov matrix formed once) to recover precision, without touching the much more
+# expensive genome-wide path. Opt-in and unvalidated against real ill-conditioned data as
+# of this writing -- verify against an oracle/legacy run before trusting it for a real study.
+use_high_prec_cov_ortho = false
 # Optional cross-check on the phenotype file; the count is derived from the file itself
 # num_pheno = 1
 

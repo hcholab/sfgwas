@@ -1,17 +1,24 @@
 #!/bin/bash
 #
-# Assoc-test comparison (plain+Cholesky vs. plain+Eigen) for a large dataset that already
-# has QC + PCA cached, run as 3 local processes on one cloud VM. Adapted from
-# compare_assoc_paths.sh + the local three-way run, with three changes:
+# Assoc-test comparison for a large dataset that already has QC + PCA cached, run as 3
+# local processes on one cloud VM. Adapted from compare_assoc_paths.sh + the local
+# three-way run, with these changes:
 #
 #   1. QC and PCA are NEVER (re)computed -- this script assumes cache/party*/gkeep.txt
 #      and cache/party*/Qpc.txt are already sitting on disk, produced elsewhere, and
 #      fails fast with a clear message if they're missing or look inconsistent.
-#   2. The legacy (fully-encrypted joint-QR) path is skipped entirely -- at this dataset's
-#      scale it takes ~17h for phase 3 alone, and it isn't needed to compare Cholesky vs.
-#      Eigen against each other or against the oracle. Both compared variants already use
-#      plain-mult; run_variant still has a "legacy" case if you ever want it standalone.
-#   3. Everything is sized for "this may take a long time" -- explicit timeouts you
+#   2. smoke/full now only run cholesky (+ its oracle check). Eigen turned out to share
+#      cholesky's ZtZ-conditioning precision issue (both derive from the same
+#      ill-conditioned Gram matrix) plus its own additional EigenDecomp-specific
+#      run-dependent error on top, and legacy -- not eigen -- is the production
+#      candidate. The eigen run/pairwise-compare lines are commented out in place
+#      (search "Eigen commented out") rather than deleted, in case that changes.
+#   3. The legacy (fully-encrypted joint-QR) path is skipped by default here too -- at
+#      this dataset's scale it takes ~17h for phase 3 alone, so it's impractical for a
+#      routine smoke/full comparison pass. run_variant still has a "legacy" case for
+#      when you deliberately want to run it (e.g. the real production run, or a
+#      one-off accuracy check via scripts/validate_against_plink2.py).
+#   4. Everything is sized for "this may take a long time" -- explicit timeouts you
 #      control, an optional smoke-test pass on a handful of blocks first, and an
 #      optional fast repeat-eigen mode that reuses the (expensive) genotype-matmul
 #      cache to just re-run the small, randomized covariate-orthogonalization step --
@@ -22,8 +29,8 @@
 #
 # Usage:
 #   ./cloud_three_way_compare.sh preflight                 # sanity-check cache only, no compute
-#   ./cloud_three_way_compare.sh smoke   [tol]              # cholesky+eigen on SMOKE_BLOCKS only
-#   ./cloud_three_way_compare.sh full    [tol] [oracle_timeout]   # the real comparison run
+#   ./cloud_three_way_compare.sh smoke   [tol]              # cholesky (+ oracle) on SMOKE_BLOCKS only
+#   ./cloud_three_way_compare.sh full    [tol] [oracle_timeout]   # cholesky (+ oracle), all blocks
 #   ./cloud_three_way_compare.sh eigen-repeat N [reuse_geno_cache=1]  # re-run eigen N times, cheaply
 #
 set -uo pipefail
@@ -234,11 +241,14 @@ case "$MODE" in
     fi
     run_oracle cholesky
 
-    run_variant eigen 0 && run_oracle eigen   # reuses cholesky's geno-matmul cache (same inputs)
-
-    echo | tee -a "${RESULTS}/summary.log"
-    echo "=== pairwise (tolerance ${TOL}) ===" | tee -a "${RESULTS}/summary.log"
-    compare_pair cholesky eigen
+    # Eigen commented out going forward: it shares cholesky's ZtZ-conditioning precision
+    # issue (both derive from the same ill-conditioned Gram matrix) plus its own additional
+    # EigenDecomp-specific run-dependent error on top, and isn't the production candidate --
+    # legacy is. Re-enable by uncommenting the next 4 lines if eigen is ever relevant again.
+    # run_variant eigen 0 && run_oracle eigen   # reuses cholesky's geno-matmul cache (same inputs)
+    # echo | tee -a "${RESULTS}/summary.log"
+    # echo "=== pairwise (tolerance ${TOL}) ===" | tee -a "${RESULTS}/summary.log"
+    # compare_pair cholesky eigen
     echo "Results in $RESULTS"
     ;;
 

@@ -944,6 +944,21 @@ type covOrthoFactor struct {
 	applyCT func(crypto.CipherMatrix) crypto.CipherMatrix
 }
 
+// covOrthoHighPrec optionally carries a higher-fracBits representation of ZtZss/scaling,
+// used only by computeCovOrthoFactor's Cholesky branch. ZtZ's condition number is the
+// square of Z's own (unlike legacy's computeCombinedQV2, which runs an actual QR directly
+// on Z via NetDQRenc), so for SNPs collinear with the covariate/PC space, the standard
+// fracBits can lose enough precision in S that downstream sxx = diag(XᵀX) - diag(BᵀB)
+// catastrophically cancels. Extra fracBits on just this ncov-by-ncov step recovers digits
+// without touching the much more expensive genome-wide path -- ZtZ is formed once, cheaply,
+// regardless of precision. nil disables this (standard-precision path, unchanged).
+type covOrthoHighPrec struct {
+	ZtZss    mpc_core.RMat
+	scaling  mpc_core.RElem
+	dataBits int
+	fracBits int
+}
+
 // computeCovOrthoFactor returns S (ncov-by-ncov) such that SᵀS = scaling²·(ZtZss)^{-1}, so
 // that Q = Zᵀ·Sᵀ is an orthonormal basis for the covariate/PC column space (see the comment
 // at this function's call site for why any such S gives identical association statistics).
@@ -956,13 +971,34 @@ type covOrthoFactor struct {
 //     eigenvalue can carry several percent of run-dependent error from the iterative
 //     shifted-QR algorithm on an ill-conditioned covariate matrix (see EigenDecomp's doc
 //     comment) — useful for comparing against Cholesky on suspect input.
-func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.CryptoParams, ZtZss mpc_core.RMat, scaling mpc_core.RElem, numThreads int) covOrthoFactor {
+func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.CryptoParams, ZtZss mpc_core.RMat, scaling mpc_core.RElem, hiPrec *covOrthoHighPrec, numThreads int) covOrthoFactor {
 	mpcObj := ast.general.mpcObj[0]
 	dataBits := mpcObj.GetDataBits()
 	fracBits := mpcObj.GetFracBits()
 
 	if !ast.general.config.UseEigenCovOrtho {
-		Sss := mpcObj.CholeskyInvSqrt(ZtZss, scaling)
+		var Sss mpc_core.RMat
+		if hiPrec == nil {
+			Sss = mpcObj.CholeskyInvSqrt(ZtZss, scaling)
+		} else {
+			// Temporarily run CholeskyInvSqrt (and everything it calls -- SqrtAndSqrtInverse,
+			// TruncVec/TruncMat) at higher precision, then rescale the result back down to
+			// the standard fracBits before it's used by the rest of this (standard-precision)
+			// pipeline. Scoped to mpcObj[0] only, synchronously, before the per-block parallel
+			// loop starts -- no concurrent goroutine touches this MPC object's precision
+			// fields during the window between save and restore.
+			Sss = func() mpc_core.RMat {
+				oldDataBits, oldFracBits := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+				defer func() {
+					mpcObj.SetDataBits(oldDataBits)
+					mpcObj.SetFracBits(oldFracBits)
+				}()
+				mpcObj.SetDataBits(hiPrec.dataBits)
+				mpcObj.SetFracBits(hiPrec.fracBits)
+				SssHi := mpcObj.CholeskyInvSqrt(hiPrec.ZtZss, hiPrec.scaling)
+				return mpcObj.TruncMat(SssHi, hiPrec.dataBits, hiPrec.fracBits-fracBits)
+			}()
+		}
 		Sct := mpcObj.SSToCMat(cryptoParams, Sss)
 		return covOrthoFactor{
 			applySS: func(A mpc_core.RMat) mpc_core.RMat {
@@ -1091,6 +1127,20 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	var tmp mat.SymDense
 	tmp.SymOuterK(nrowsTotalInvSqrt, Zt) // Scale Zt*Z by 1/sqrt(n)
 	ZtZss := mpc.DenseToRMat(rtype, &tmp, fracBits)
+
+	// Also capture ZtZ at higher fracBits from the same plaintext tmp, before it's
+	// discarded -- see covOrthoHighPrec's doc comment. Only meaningful for the Cholesky
+	// branch (eigen already has its own, separate precision story via EigenDecomp).
+	var hiPrec *covOrthoHighPrec
+	if ast.general.config.UseHighPrecCovOrtho && !ast.general.config.UseEigenCovOrtho {
+		hiDataBits, hiFracBits := mpcObj.GetDataBits()*2, fracBits*2
+		hiPrec = &covOrthoHighPrec{
+			ZtZss:    mpc.DenseToRMat(rtype, &tmp, hiFracBits),
+			scaling:  rtype.FromFloat64(math.Sqrt(math.Sqrt(float64(nrowsTotal))), hiFracBits),
+			dataBits: hiDataBits,
+			fracBits: hiFracBits,
+		}
+	}
 	tmp.Reset()
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Starting calculation of covariate correction factor")
@@ -1101,7 +1151,7 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	// YtQ·B, ...), so any S with SᵀS = sqrt(n)·(ZtZss)^{-1} is interchangeable — see
 	// computeCovOrthoFactor for the two constructions available (config.UseEigenCovOrtho).
 	scaling := rtype.FromFloat64(math.Sqrt(math.Sqrt(float64(nrowsTotal))), fracBits)
-	covOrtho := ast.computeCovOrthoFactor(cryptoParams, ZtZss, scaling, numThreads)
+	covOrtho := ast.computeCovOrthoFactor(cryptoParams, ZtZss, scaling, hiPrec, numThreads)
 
 	ZtZss = nil
 

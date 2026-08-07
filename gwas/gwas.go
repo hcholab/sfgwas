@@ -63,6 +63,7 @@ type Config struct {
 	UseCachedCombinedQ     bool `toml:"use_cached_combined_q"`
 	UsePlainMultPhase3     bool `toml:"use_plain_mult_phase_3"`
 	UseEigenCovOrtho       bool `toml:"use_eigen_cov_ortho"`
+	UseHighPrecCovOrtho    bool `toml:"use_high_prec_cov_ortho"`
 	SkipPowerIter          bool `toml:"skip_power_iter"`
 	UseCachedPowerIter     bool `toml:"use_cached_power_iter"`
 	PowerIterCacheInterval int  `toml:"power_iter_cache_interval"`

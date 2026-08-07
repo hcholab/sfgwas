@@ -220,6 +220,10 @@ func (mpcObj *MPC) SetFracBits(f int) {
 	mpcObj.fracBits = f
 }
 
+func (mpcObj *MPC) SetDataBits(k int) {
+	mpcObj.dataBits = k
+}
+
 func (mpcObj *MPC) GetRType() mpc_core.RElem {
 	return mpcObj.rtype
 }
