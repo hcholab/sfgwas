@@ -34,6 +34,16 @@ func GramSchmidt(M *mat.Dense) *mat.Dense {
 			norm += v[i] * v[i]
 		}
 		norm = math.Sqrt(norm)
+		if norm == 0 {
+			// Column j is exactly linearly dependent on columns 0..j-1 (e.g. an
+			// all-zero covariate) -- its residual is the zero vector, so v[i]/norm
+			// would be 0/0 = NaN for every row, which then poisons every downstream
+			// dot product against this column (every SNP's projection, every
+			// phenotype's residual -- not just this one column). A zero-information
+			// column should contribute nothing, so leave it as the zero vector
+			// instead of NaN.
+			continue
+		}
 		for i := 0; i < n; i++ {
 			Q.Set(i, j, v[i]/norm)
 		}
