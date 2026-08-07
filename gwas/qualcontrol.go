@@ -682,26 +682,33 @@ func (qc *QC) QualityControlProtocol(useCache bool) {
 
 	var indFilt []bool
 	var nIndFilt int
-	indFiltCache := qc.general.CachePath("ikeep.txt")
-	if pid > 0 {
-		if useCache {
-			indFilt = readFilterFromFile(indFiltCache, qc.general.gwasParams.numInds[pid], false)
-			log.LLvl1(time.Now().Format(time.RFC3339), "Individual filter loaded from cache:", indFiltCache)
-		} else {
-			indFilt = qc.IndividualMissAndHetFilters()
-
-			writeFilterToFile(indFiltCache, indFilt, false)
-			log.LLvl1(time.Now().Format(time.RFC3339), "Individual filter wrote to cache:", indFiltCache)
+	if qc.general.config.SkipIndFilt {
+		if pid > 0 {
+			nIndFilt = qc.general.gwasParams.numInds[pid]
+			log.LLvl1(time.Now().Format(time.RFC3339), "Individual filter skipped, keeping all", nIndFilt, "individuals")
 		}
+	} else {
+		indFiltCache := qc.general.CachePath("ikeep.txt")
+		if pid > 0 {
+			if useCache {
+				indFilt = readFilterFromFile(indFiltCache, qc.general.gwasParams.numInds[pid], false)
+				log.LLvl1(time.Now().Format(time.RFC3339), "Individual filter loaded from cache:", indFiltCache)
+			} else {
+				indFilt = qc.IndividualMissAndHetFilters()
 
-		// Update geno streams
-		for _, genoFs := range qc.general.genoBlocks {
-			genoFs.UpdateRowFilt(indFilt)
+				writeFilterToFile(indFiltCache, indFilt, false)
+				log.LLvl1(time.Now().Format(time.RFC3339), "Individual filter wrote to cache:", indFiltCache)
+			}
+
+			// Update geno streams
+			for _, genoFs := range qc.general.genoBlocks {
+				genoFs.UpdateRowFilt(indFilt)
+			}
+			nIndFilt = SumBool(indFilt)
+
+			log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Number of individuals: %d -> %d",
+				qc.general.gwasParams.numInds[pid], nIndFilt))
 		}
-		nIndFilt = SumBool(indFilt)
-
-		log.LLvl1(time.Now().Format(time.RFC3339), fmt.Sprintf("Number of individuals: %d -> %d",
-			qc.general.gwasParams.numInds[pid], nIndFilt))
 	}
 
 	// Share filtered snp/individual count with other parties

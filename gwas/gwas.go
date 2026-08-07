@@ -56,6 +56,7 @@ type Config struct {
 	NumPowerIters int `toml:"num_power_iters"`
 
 	SkipQC                 bool `toml:"skip_qc"`
+	SkipIndFilt            bool `toml:"skip_ind_filt"`
 	SkipPCA                bool `toml:"skip_pca"`
 	UseCachedQC            bool `toml:"use_cached_qc"`
 	UseCachedPCA           bool `toml:"use_cached_pca"`

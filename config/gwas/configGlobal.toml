@@ -29,6 +29,7 @@ use_precomputed_geno_count = true
 ## Quality control parameters
 use_cached_qc = false
 skip_qc = false
+skip_ind_filt = true    # Temporarily set to true for MVP run. TODO: Set to false and make configurable through website
 imiss_ub = 1.0          # Unused if "pgen"
 het_lb = 0.0            # Unused if "pgen"
 het_ub = 0.1            # Unused if "pgen"
