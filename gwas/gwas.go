@@ -32,6 +32,9 @@ type ProtocolInfo struct {
 	cov            *mat.Dense
 	pos            []uint64
 
+	// Optional relatedness mask
+	relMask crypto.CipherVector
+
 	gwasParams *GWASParams
 
 	config *Config
@@ -108,6 +111,8 @@ type Config struct {
 	Debug          bool  `toml:"debug"`
 	BlocksForAssoc []int `toml:"blocks_for_assoc_test"`
 	PgenBatchSize  int   `toml:"pgen_batch_nsnp"`
+
+	RelatednessMaskFile string `toml:"relatedness_mask_file"`
 }
 
 func (prot *ProtocolInfo) IsBlockForAssocTest(blockId int) bool {
@@ -269,7 +274,7 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 
 	gwasParams := InitGWASParams(config.NumInds, config.NumSnps, config.NumCovs, config.NumPCs, config.SnpDistThres)
 
-	return &ProtocolInfo{
+	gwasProt = &ProtocolInfo{
 		mpcObj: mpcEnv, // One MPC object for each thread
 		cps:    cps,
 
@@ -282,6 +287,11 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 		gwasParams: gwasParams,
 		config:     config,
 	}
+
+	if !mpcOnly && config.RelatednessMaskFile != "" {
+		gwasProt.relMask = loadEncryptedMask(cps, config.RelatednessMaskFile)
+	}
+	return
 }
 
 func (g *ProtocolInfo) Phase1() {

@@ -414,6 +414,8 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix) (matOut cryp
 
 			matOut = crypto.ConcatCipherMatrix(outMult)
 
+			applyRelMaskToMatrix(ast.general, matOut)
+
 		} else {
 			matOut, dosageSum, dosageSqSum = MatMult4Stream(cryptoParams, mat, XBlock, 5, true, 0)
 
@@ -546,6 +548,7 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherVector, []bool) {
 		ynew[0] = mpcObj.Network.BootstrapVecAll(cryptoParams, ynew[0])
 		ynew[0] = crypto.CMultConst(cryptoParams, ynew[0], -1.0, true)
 		ynew[0] = crypto.CPAdd(cryptoParams, ynew[0], y)
+		ynew[0] = applyRelMaskToVector(ast.general, ynew[0])
 
 		log.LLvl1(time.Now().Format(time.RFC3339), "ynew computed")
 
