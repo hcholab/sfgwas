@@ -1014,6 +1014,12 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 			LinvR := mpcObj.RevealSymMat(LinvSs).ToFloat(revealFracBits)
 			SaveFloatMatrixToFileRowMajor(ast.general.CachePath("cholesky_L.txt"), Lr)
 			SaveFloatMatrixToFileRowMajor(ast.general.CachePath("cholesky_Linv.txt"), LinvR)
+
+			// Sss is always rescaled back to the standard fracBits before being returned
+			// above (both branches), regardless of revealFracBits/hiPrec -- unlike Lss/LinvSs,
+			// which stay at whatever precision they were computed at.
+			Sr := mpcObj.RevealSymMat(Sss).ToFloat(fracBits)
+			SaveFloatMatrixToFileRowMajor(ast.general.CachePath("cholesky_S.txt"), Sr)
 		}
 
 		Sct := mpcObj.SSToCMat(cryptoParams, Sss)
@@ -1168,14 +1174,24 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	// YtQ·B, ...), so any S with SᵀS = sqrt(n)·(ZtZss)^{-1} is interchangeable — see
 	// computeCovOrthoFactor for the two constructions available (config.UseEigenCovOrtho).
 	scaling := rtype.FromFloat64(math.Sqrt(math.Sqrt(float64(nrowsTotal))), fracBits)
+
+	// ZtZ is the earliest checkpoint in the covariate-orthogonalization chain -- dumped
+	// before it's decomposed at all, so a divergence here isolates to how ZtZ itself was
+	// formed (data/QC/individual-count mismatch) rather than to Cholesky or anything
+	// downstream of it. Compare against oracle_ZtZ.txt.
+	if debug && pid > 0 {
+		ZtZr := mpcObj.RevealSymMat(ZtZss).ToFloat(fracBits)
+		SaveFloatMatrixToFileRowMajor(ast.general.CachePath("ZtZ.txt"), ZtZr)
+	}
+
 	covOrtho := ast.computeCovOrthoFactor(cryptoParams, ZtZss, scaling, hiPrec, numThreads)
 
 	ZtZss = nil
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Calculating inverse of covariate covariance matrix: finished")
 
-	var varx, sx, sxx crypto.CipherVector
-	var vary, sy, sxy crypto.CipherMatrix
+	var varx, sx, sxx, xtxdiag crypto.CipherVector
+	var vary, sy, sxy, ztx, qtx crypto.CipherMatrix
 	var nsnps, numCtx int
 	var outFilter []bool
 
@@ -1202,6 +1218,15 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	}
 
 	QtY1ss := covOrtho.applySS(ZtY1ss)
+
+	// QtY1 = Qᵀ[Y;1] is the covariate projection applied to phenotypes+intercept -- the
+	// same S-application step as the per-block QtX (qtx.txt) below, but computed once,
+	// so it's cheap to dump and a useful earlier checkpoint: if this already diverges,
+	// the bug is in S/applySS itself, not in anything specific to genotype blocks.
+	if debug && pid > 0 {
+		QtY1r := mpcObj.RevealSymMat(QtY1ss).ToFloat(fracBits)
+		SaveFloatMatrixToFileRowMajor(ast.general.CachePath("QtY1.txt"), QtY1r)
+	}
 
 	// Split into QtY and Qt1
 	YtQss := mpc_core.InitRMat(rtype.Zero(), npheno, ncov)
@@ -1256,6 +1281,18 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		sxxBlocks := make([]crypto.CipherMatrix, numBlocks)
 		sxyBlocks := make([]crypto.CipherMatrix, numBlocks)
 
+		// Debug-only checkpoints bracketing the S-application step: ztxBlocks is B's
+		// input (ZtXscaled, before applyCT), qtxBlocks is B itself (after applyCT), and
+		// xtxBlocks is diag(XtX) before the BtB subtraction that turns it into sxx. Diffed
+		// against the oracle's own ztx/qtx/xtxdiag dumps, these isolate a divergence to
+		// before S is applied, to the S-multiply itself, or to the final BtB subtraction.
+		var ztxBlocks, qtxBlocks, xtxBlocks []crypto.CipherMatrix
+		if debug {
+			ztxBlocks = make([]crypto.CipherMatrix, numBlocks)
+			qtxBlocks = make([]crypto.CipherMatrix, numBlocks)
+			xtxBlocks = make([]crypto.CipherMatrix, numBlocks)
+		}
+
 		for b := 0; b < numBlocks; b++ {
 			if !ast.general.IsBlockForAssocTest(b) {
 				log.LLvl1(time.Now().Format(time.RFC3339), "MatMult: block", b+1, "/", numBlocks, "skipped")
@@ -1288,8 +1325,19 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 				OnetXsq, _ := crypto.EncryptFloatVector(cryptoParams, dosageSqSum)
 				OnetXsq = mpcObj.Network.AggregateCVec(cryptoParams, OnetXsq)
 
+				if debug {
+					// Snapshot before the BtB-subtraction loop below mutates OnetXsq in
+					// place (evaluator.Sub writes into sxxBlocks[b][0], which IS OnetXsq).
+					xtxBlocks[b] = crypto.CipherMatrix{crypto.CopyEncryptedVector(OnetXsq)}
+				}
+
 				// Compute B = QᵀX = S * (ZᵀX)/sqrt(n)
 				B := covOrtho.applyCT(ZtXscaled)
+
+				if debug {
+					ztxBlocks[b] = ZtXscaled
+					qtxBlocks[b] = B
+				}
 
 				// Compute sx = 1ᵀ(I - QQᵀ)X
 				if covAllOnes {
@@ -1345,6 +1393,13 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		sxy = crypto.ConcatCipherMatrix(sxyBlocks)
 		sxx = crypto.ConcatCipherMatrix(sxxBlocks)[0]
 		sxBlocks, sxxBlocks, sxyBlocks = nil, nil, nil
+
+		if debug {
+			ztx = crypto.ConcatCipherMatrix(ztxBlocks)
+			qtx = crypto.ConcatCipherMatrix(qtxBlocks)
+			xtxdiag = crypto.ConcatCipherMatrix(xtxBlocks)[0]
+			ztxBlocks, qtxBlocks, xtxBlocks = nil, nil, nil
+		}
 
 		totLen := 0
 		for i := range filtOut {
@@ -1434,6 +1489,14 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 			SaveMatrixToFile(cryptoParams, mpcObj, sxy, len(sxy[0])*slots, -1, ast.general.CachePath("sxy.txt"))                      // sxy
 			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{varx}, len(varx)*slots, -1, ast.general.CachePath("varx.txt")) // sxx - (sx*sx/n)
 			SaveMatrixToFile(cryptoParams, mpcObj, vary, 1, -1, ast.general.CachePath("vary.txt"))                                    // syy - (sy*sy/n)
+
+			// ztx/qtx bracket the S-application step (see the ztxBlocks/qtxBlocks comment
+			// above); xtxdiag is diag(XtX) before the BtB subtraction that produces sxx.
+			// Same numCtx*slots padding as sxx.txt -- use xfilt.bin to drop it. ztx/qtx
+			// have ncov rows (one SaveMatrixToFile call each, like sxy's npheno rows).
+			SaveMatrixToFile(cryptoParams, mpcObj, ztx, len(ztx[0])*slots, -1, ast.general.CachePath("ztx.txt"))                               // (ZtX)/sqrt(n), pre-S
+			SaveMatrixToFile(cryptoParams, mpcObj, qtx, len(qtx[0])*slots, -1, ast.general.CachePath("qtx.txt"))                               // B = QtX, post-S
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{xtxdiag}, len(xtxdiag)*slots, -1, ast.general.CachePath("xtxdiag.txt")) // diag(XtX), pre-BtB
 		}
 	}
 

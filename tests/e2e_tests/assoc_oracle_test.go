@@ -70,7 +70,15 @@ func TestAssocPlaintextOracleCholesky(t *testing.T) {
 		if dumpDir != "" {
 			gwas.SaveFloatMatrixToFileRowMajor(filepath.Join(dumpDir, "oracle_cholesky_L.txt"), denseRows(L))
 			gwas.SaveFloatMatrixToFileRowMajor(filepath.Join(dumpDir, "oracle_cholesky_Linv.txt"), denseRows(Linv))
-			t.Logf("dumped oracle Cholesky L/Linv to %s", dumpDir)
+
+			// S = scaling*Linv, matching gwas.CholeskyInvSqrt's returned S (the actual
+			// factor applied to ZtX/ZtY1, distinct from the un-scaled Linv above) --
+			// compare against cache/party*/cholesky_S.txt.
+			var S mat.Dense
+			S.Scale(math.Pow(float64(ntot), 0.25), Linv)
+			gwas.SaveFloatMatrixToFileRowMajor(filepath.Join(dumpDir, "oracle_cholesky_S.txt"), denseRows(&S))
+
+			t.Logf("dumped oracle Cholesky L/Linv/S to %s", dumpDir)
 		}
 		return Q
 	})
@@ -203,6 +211,12 @@ func runAssocPlaintextOracle(t *testing.T, filePrefix string, computeQ func(t *t
 		nInvSqrt := math.Sqrt(1 / float64(ntot))
 		var A mat.SymDense
 		A.SymOuterK(nInvSqrt, mat.DenseCopyOf(Z.T()))
+
+		// A is exactly ZtZss from gwas.GetAssociationStatsPlainMult (same alpha=1/sqrt(n)
+		// scale) -- the earliest checkpoint in the whole covariate-orthogonalization
+		// chain, dumped unprefixed since it doesn't depend on Gram-Schmidt vs. Cholesky.
+		gwas.SaveFloatMatrixToFileRowMajor(filepath.Join(dumpDir, "oracle_ZtZ.txt"), denseRows(mat.DenseCopyOf(&A)))
+
 		var eig mat.EigenSym
 		if !eig.Factorize(&A, true) {
 			t.Fatalf("eigendecomposition failed")
@@ -219,6 +233,18 @@ func runAssocPlaintextOracle(t *testing.T, filePrefix string, computeQ func(t *t
 
 	// ---- Explicit orthonormal basis and the residualized phenotypes ----
 	Q := computeQ(t, Z, ntot, dumpDir)
+
+	if dumpDir != "" {
+		// QtY1 = Qᵀ[Y|1] is the same S-application step as the per-block ztx/qtx below,
+		// but computed once -- a cheap, early checkpoint against cache/party*/QtY1.txt.
+		Y1 := mat.NewDense(ntot, npheno+1, nil)
+		for i := 0; i < ntot; i++ {
+			Y1.SetRow(i, append(append([]float64{}, Yrows[i]...), 1))
+		}
+		var QtY1 mat.Dense
+		QtY1.Mul(Q.T(), Y1)
+		gwas.SaveFloatMatrixToFileRowMajor(filepath.Join(dumpDir, fmt.Sprintf("oracle_%sQtY1.txt", filePrefix)), denseRows(&QtY1))
+	}
 
 	var QtY, QQtY, Ynew mat.Dense
 	QtY.Mul(Q.T(), Y)
@@ -246,6 +272,15 @@ func runAssocPlaintextOracle(t *testing.T, filePrefix string, computeQ func(t *t
 	var sxxAll []float64
 	sxyAll := make([][]float64, npheno)
 
+	// ztx/qtx bracket the same S-application step as gwas.GetAssociationStatsPlainMult's
+	// ztxBlocks/qtxBlocks (ztx = (ZtX)/sqrt(n) pre-projection, qtx = QtX post-projection);
+	// xtxAll is diag(XtX) before the proj2 subtraction that turns it into sxx. k rows
+	// each, one per covariate/PC dimension, growing across blocks like sxyAll.
+	ztxAll := make([][]float64, k)
+	qtxAll := make([][]float64, k)
+	var xtxAll []float64
+	nrowsTotalInvSqrt := 1 / math.Sqrt(float64(ntot))
+
 	tmpDir := t.TempDir()
 	shift := 0
 	for b := 0; b < cfgs[1].GenoNumBlocks; b++ {
@@ -262,6 +297,7 @@ func runAssocPlaintextOracle(t *testing.T, filePrefix string, computeQ func(t *t
 		}
 
 		QtX := mat.NewDense(k, nsnp, nil)       // Qᵀ X, accumulated across parties
+		ZtX := mat.NewDense(k, nsnp, nil)       // Zᵀ X, accumulated across parties (pre-projection)
 		YntX := mat.NewDense(npheno, nsnp, nil) // Ynewᵀ X
 		xtx := make([]float64, nsnp)            // diag(XᵀX)
 
@@ -271,12 +307,15 @@ func runAssocPlaintextOracle(t *testing.T, filePrefix string, computeQ func(t *t
 
 			off, nind := parties[p].offset, parties[p].nind
 			Qp := Q.Slice(off, off+nind, 0, k)
+			Zp := Z.Slice(off, off+nind, 0, k)
 			Yp := Ynew.Slice(off, off+nind, 0, npheno)
 
-			var qtx, yntx mat.Dense
+			var qtx, ztx, yntx mat.Dense
 			qtx.Mul(Qp.T(), X)
+			ztx.Mul(Zp.T(), X)
 			yntx.Mul(Yp.T(), X)
 			QtX.Add(QtX, &qtx)
+			ZtX.Add(ZtX, &ztx)
 			YntX.Add(YntX, &yntx)
 
 			for j := 0; j < nsnp; j++ {
@@ -287,6 +326,8 @@ func runAssocPlaintextOracle(t *testing.T, filePrefix string, computeQ func(t *t
 			}
 		}
 
+		ZtX.Scale(nrowsTotalInvSqrt, ZtX) // (ZᵀX)/sqrt(n), matching gwas's ZtXscaled
+
 		for j := 0; j < nsnp; j++ {
 			var proj2 float64
 			for c := 0; c < k; c++ {
@@ -294,6 +335,11 @@ func runAssocPlaintextOracle(t *testing.T, filePrefix string, computeQ func(t *t
 			}
 			sxx := xtx[j] - proj2
 			sxxAll = append(sxxAll, sxx)
+			xtxAll = append(xtxAll, xtx[j])
+			for c := 0; c < k; c++ {
+				ztxAll[c] = append(ztxAll[c], ZtX.At(c, j))
+				qtxAll[c] = append(qtxAll[c], QtX.At(c, j))
+			}
 			for i := 0; i < npheno; i++ {
 				sxyAll[i] = append(sxyAll[i], YntX.At(i, j))
 				gotR[i] = append(gotR[i], YntX.At(i, j)/(math.Sqrt(sxx)*math.Sqrt(syy[i])))
@@ -310,6 +356,27 @@ func runAssocPlaintextOracle(t *testing.T, filePrefix string, computeQ func(t *t
 			writeFloatLine(t, filepath.Join(dumpDir, fmt.Sprintf("oracle_%ssxy_%d.txt", filePrefix, i)), sxyAll[i])
 		}
 		writeFloatLine(t, filepath.Join(dumpDir, fmt.Sprintf("oracle_%ssyy.txt", filePrefix)), syy)
+
+		// sx/sy/varx/vary mirror gwas.GetAssociationStatsPlainMult's own debug dump
+		// (sx.txt, sy.txt, varx.txt, vary.txt): Z there always has the intercept
+		// prepended, forcing covAllOnes=true, which forces sx/sy to the zero vector and
+		// varx/vary to plain aliases of sxx/syy (see assoc.go's "else { varx = sxx; vary
+		// = syy }" branch). Z here is built the same way (z = append(z, 1) first), so
+		// the same identities hold -- dumped explicitly so the file-for-file diff
+		// against cache/party*/{sx,sy,varx,vary}.txt doesn't require remembering that.
+		writeFloatLine(t, filepath.Join(dumpDir, fmt.Sprintf("oracle_%ssx.txt", filePrefix)), make([]float64, len(sxxAll)))
+		writeFloatLine(t, filepath.Join(dumpDir, fmt.Sprintf("oracle_%ssy.txt", filePrefix)), make([]float64, npheno))
+		writeFloatLine(t, filepath.Join(dumpDir, fmt.Sprintf("oracle_%svarx.txt", filePrefix)), sxxAll)
+		writeFloatLine(t, filepath.Join(dumpDir, fmt.Sprintf("oracle_%svary.txt", filePrefix)), syy)
+
+		// ztx/qtx/xtxdiag bracket the S-application step and the BtB subtraction --
+		// compare against cache/party*/{ztx,qtx,xtxdiag}.txt (after masking with
+		// xfilt.bin) to isolate a divergence to before S is applied, to the S-multiply
+		// itself, or to the final BtB subtraction that produces sxx.
+		gwas.SaveFloatMatrixToFileRowMajor(filepath.Join(dumpDir, fmt.Sprintf("oracle_%sztx.txt", filePrefix)), ztxAll)
+		gwas.SaveFloatMatrixToFileRowMajor(filepath.Join(dumpDir, fmt.Sprintf("oracle_%sqtx.txt", filePrefix)), qtxAll)
+		writeFloatLine(t, filepath.Join(dumpDir, fmt.Sprintf("oracle_%sxtxdiag.txt", filePrefix)), xtxAll)
+
 		t.Logf("dumped oracle intermediates to %s", dumpDir)
 	}
 
