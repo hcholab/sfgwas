@@ -1023,6 +1023,15 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 		}
 
 		Sct := mpcObj.SSToCMat(cryptoParams, Sss)
+
+		// Sct is the ciphertext conversion of Sss actually used by applyCT (unlike
+		// cholesky_S.txt, which reveals Sss directly via the SS-domain RevealSymMat path
+		// that applySS uses instead). If SSToCMat introduces an error that RevealSymMat
+		// doesn't, this diverges from cholesky_S.txt even though both claim to be S.
+		if debug && pid > 0 {
+			SaveMatrixToFile(cryptoParams, mpcObj, Sct, len(Sss), -1, ast.general.CachePath("cholesky_Sct.txt"))
+		}
+
 		return covOrthoFactor{
 			applySS: func(A mpc_core.RMat) mpc_core.RMat {
 				R := mpcObj.SSMultMat(Sss, A)
