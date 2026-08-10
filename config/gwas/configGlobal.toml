@@ -1,6 +1,6 @@
 num_main_parties = 2
 hub_party_id = 1
-debug = false
+debug = true
 
 ## Crypto parameters
 # Options: PN12QP109, PN13QP218, PN14QP438, PN15QP880, PN16QP1761
@@ -27,7 +27,7 @@ geno_file_format = "pgen"
 use_precomputed_geno_count = true
 
 ## Quality control parameters
-use_cached_qc = false
+use_cached_qc = true
 skip_qc = false
 imiss_ub = 1.0          # Unused if "pgen"
 het_lb = 0.0            # Unused if "pgen"
@@ -38,7 +38,9 @@ hwe_ub = 28.374
 snp_dist_thres = 100000
 
 ## PCA parameters
-use_cached_pca = false
+use_cached_pca = true
+use_cached_power_iter = false
+power_iter_cache_interval = 2    # checkpoint every Nth power iteration; <= 1 means every one
 skip_pca = false
 iter_per_eigenval = 5
 num_pcs_to_remove = 5
@@ -48,7 +50,30 @@ num_power_iters = 20
 ## Assoc test parameters
 use_cached_combined_q = false
 pgen_batch_nsnp = 8192
-blocks_for_assoc_test = []    # tests all if empty
+blocks_for_assoc_test = [0]
+
+# Project out covariates/PCs lazily via (Z'Z)^-1 instead of a joint QR on the
+# genotype matrix. Mathematically equivalent, substantially faster.
+use_plain_mult_phase_3 = true
+# Only relevant when use_plain_mult_phase_3 = true. (Z'Z)^-1 is applied via a factor S
+# with S'S = (Z'Z)^-1; any such S gives identical association statistics (see comment
+# above the call site in gwas/assoc.go). Default computes S via Cholesky decomposition
+# (direct, no eigenvalues). Setting this to true instead computes S via eigendecomposition
+# (S = diag(1/sqrt(lambda))*V'), which can lose several percent of precision on small
+# eigenvalues of an ill-conditioned covariate matrix.
+use_eigen_cov_ortho = false
+# Only relevant when use_eigen_cov_ortho = false. Cholesky's S comes from decomposing the
+# covariate Gram matrix Z'Z, whose condition number is the square of Z's own -- unlike
+# legacy's direct QR on Z. For SNPs collinear with the covariate/PC space (e.g. ancestry
+# PCs in an admixed cohort), this can lose enough precision that sxx = diag(X'X) -
+# diag(B'B) catastrophically cancels, producing |r| far outside [-1,1]. Setting this to
+# true doubles fracBits/dataBits for just the Z'Z/Cholesky step (cheap: Z'Z is a small
+# ncov-by-ncov matrix formed once) to recover precision, without touching the much more
+# expensive genome-wide path. Opt-in and unvalidated against real ill-conditioned data as
+# of this writing -- verify against an oracle/legacy run before trusting it for a real study.
+use_high_prec_cov_ortho = false
+# Optional cross-check on the phenotype file; the count is derived from the file itself
+# num_pheno = 1
 
 ## Networking parameters
 # Party with a smaller ID listens for connection
@@ -59,11 +84,15 @@ binding_ipaddr = "0.0.0.0" # When establishing a connection, listens on all inte
 
 [servers.party0]
 ipaddr = "127.0.0.1"
-ports = { party1 = "8020", party2 = "8040" } # Port numbers need to be at least mpc_num_threads apart
+ports = { party1 = "58020", party2 = "58040" } # Port numbers need to be at least mpc_num_threads apart
+# Moved off the 8000s: on Hadoop/YARN hosts (e.g. Dataproc), 8020 (HDFS NameNode RPC) and
+# 8040/8042 (YARN NodeManager) are commonly already bound, which looks like a network/TCP
+# problem (connection refused, endless retries) but is actually just a port collision.
+# 58020+ sits in the IANA dynamic/private range (49152-65535), well clear of that.
 
 [servers.party1]
 ipaddr = "127.0.0.1"
-ports = { party2 = "8060" }
+ports = { party2 = "58060" }
 
 [servers.party2]
 ipaddr = "127.0.0.1"

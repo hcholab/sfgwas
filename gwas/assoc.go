@@ -65,11 +65,28 @@ func (g *ProtocolInfo) InitAssociationTests(Qpc crypto.CipherMatrix) *AssocTest 
 
 func (g *ProtocolInfo) InitAssociationTestsPlainMult(QpcPlain *mat.Dense) *AssocTestPlainMult {
 
-	pid := g.mpcObj[0].GetPid()
+	mpcObj := g.mpcObj[0]
+	pid := mpcObj.GetPid()
 	gwasParams := g.gwasParams
 	npc := gwasParams.numPCs
 	ncov := gwasParams.numCovs
-	npheno := gwasParams.numPheno
+
+	// The phenotype count is derived from the input file rather than the config, so that
+	// no new config key is required. Party 0 holds no data, so the hub tells it the count;
+	// every party needs it before the first secret-shared multiplication.
+	var npheno int
+	if pid > 0 {
+		_, npheno = g.pheno.Dims() // g.pheno is nsample-by-npheno as loaded
+		if g.config.NumPheno > 0 && g.config.NumPheno != npheno {
+			log.Fatalf("num_pheno=%d in config, but %s has %d phenotypes", g.config.NumPheno, g.config.PhenoFile, npheno)
+		}
+		if pid == mpcObj.GetHubPid() {
+			mpcObj.Network.SendInt(npheno, 0)
+		}
+	} else {
+		npheno = mpcObj.Network.ReceiveInt(mpcObj.GetHubPid())
+	}
+	gwasParams.SetNumPheno(npheno)
 
 	if pid > 0 && QpcPlain == nil {
 		log.Fatal("Plaintext Qpca has not been provided")
@@ -86,13 +103,9 @@ func (g *ProtocolInfo) InitAssociationTestsPlainMult(QpcPlain *mat.Dense) *Assoc
 
 		nsample := gwasParams.numFiltInds[pid]
 
-		phenoRows, phenoCols := phenoPlain.Dims()
+		_, phenoCols := phenoPlain.Dims()
 		covRows, covCols := covPlain.Dims()
 		qpcRows, qpcCols := QpcPlain.Dims()
-
-		if phenoRows != npheno {
-			log.Fatalf("phenoPlain has %d rows; expected npheno=%d", phenoRows, npheno)
-		}
 
 		if covRows != ncov {
 			log.Fatalf("covPlain has %d rows; expected ncov=%d", covRows, ncov)
@@ -215,10 +228,13 @@ func (ast *AssocTestPlainMult) GenoBlockMultPlain(b int, mat *mat.Dense) (matOut
 		return
 	}
 
-	multFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_mult.%d.bin", b))
-	dosFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_dos_sum.%d.txt", b))
-	dos2File := ast.general.CachePath(fmt.Sprintf("assoc_cache_dos_sqsum.%d.txt", b))
-	filtFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_filt.%d.txt", b))
+	// Distinct from the assoc_cache_* files written by GenoBlockMult: the contents
+	// (plaintext floats vs. serialized ciphertexts) and the vector lengths (nsnps vs.
+	// numCtx*slots) differ, so the two paths must not share a cache.
+	multFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_plain_mult.%d.txt", b))
+	dosFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_plain_dos_sum.%d.txt", b))
+	dos2File := ast.general.CachePath(fmt.Sprintf("assoc_cache_plain_dos_sqsum.%d.txt", b))
+	filtFile := ast.general.CachePath(fmt.Sprintf("assoc_cache_plain_filt.%d.txt", b))
 
 	if fileExists(multFile) && fileExists(dosFile) && fileExists(dos2File) && fileExists(filtFile) {
 
@@ -229,8 +245,18 @@ func (ast *AssocTestPlainMult) GenoBlockMultPlain(b int, mat *mat.Dense) (matOut
 		dosageSqSum = LoadFloatVectorFromFile(dos2File, nsnps)
 		filtOut = readFilterFromFile(filtFile, nsnps, true)
 
-		log.LLvl1("Dosage Sum:", dosageSum[:5])
-		log.LLvl1("Dosage SqSum:", dosageSqSum[:5])
+		nrowsExp, _ := mat.Dims()
+		if len(matOut) != nrowsExp || len(matOut[0]) != nsnps {
+			ncolsGot := 0
+			if len(matOut) > 0 {
+				ncolsGot = len(matOut[0])
+			}
+			log.Fatalf("stale cache %s: got %d-by-%d, expected %d-by-%d",
+				multFile, len(matOut), ncolsGot, nrowsExp, nsnps)
+		}
+
+		log.LLvl1("Dosage Sum:", dosageSum[:Min(5, nsnps)])
+		log.LLvl1("Dosage SqSum:", dosageSqSum[:Min(5, nsnps)])
 
 	} else {
 
@@ -295,7 +321,7 @@ func (ast *AssocTestPlainMult) GenoBlockMultPlain(b int, mat *mat.Dense) (matOut
 						batchFilt := snpFilt[startIndex : idx+1]
 						gfsTempFile := ast.general.CachePath(fmt.Sprintf("pgen_gfs.%d.tmp", threadId))
 
-						FilterMatrixFilePgen(pgenFile, numInd, counter, ast.general.config.SampleKeepFile, ast.general.config.SnpIdsFile, shift+startIndex, batchFilt, gfsTempFile)
+						FilterMatrixFilePgen(pgenFile, numInd, counter, ast.general.config.SampleKeepFile, ast.general.config.SnpIdsFile, shift+startIndex, batchFilt, gfsTempFile, nprocsPerBlock)
 
 						X := NewGenoFileStream(gfsTempFile, uint64(numInd), uint64(counter), true)
 
@@ -325,16 +351,12 @@ func (ast *AssocTestPlainMult) GenoBlockMultPlain(b int, mat *mat.Dense) (matOut
 
 		} else {
 			matOut, dosageSum, dosageSqSum = MatMult4StreamPlain(mat, XBlock, true, 0)
-
-			for c := 0; c < nsnps; c++ {
-				filtOut[c] = true
-			}
 		}
 
 		log.LLvl1(time.Now().Format(time.RFC3339), "MatMult: block", b+1, "/", numBlocks, "elapsed time", time.Since(start))
 
 		// Save cache
-		SaveFloatMatrixToFile(multFile, matOut)
+		SaveFloatMatrixToFileRowMajor(multFile, matOut)
 		SaveFloatVectorToFile(dosFile, dosageSum)
 		SaveFloatVectorToFile(dos2File, dosageSqSum)
 		writeFilterToFile(filtFile, filtOut, true)
@@ -464,7 +486,7 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix) (matOut cryp
 						batchFilt := snpFilt[startIndex : idx+1]
 						gfsTempFile := ast.general.CachePath(fmt.Sprintf("pgen_gfs.%d.tmp", threadId))
 
-						FilterMatrixFilePgen(pgenFile, numInd, counter, ast.general.config.SampleKeepFile, ast.general.config.SnpIdsFile, shift+startIndex, batchFilt, gfsTempFile)
+						FilterMatrixFilePgen(pgenFile, numInd, counter, ast.general.config.SampleKeepFile, ast.general.config.SnpIdsFile, shift+startIndex, batchFilt, gfsTempFile, nprocsPerBlock)
 
 						X := NewGenoFileStream(gfsTempFile, uint64(numInd), uint64(counter), true)
 
@@ -877,6 +899,11 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
 	stdinvx, stdinvy := ComputeStdInv(cryptoParams, mpcPar, varx, vary, nsnps, outFilter, debug)
 	log.LLvl1(time.Now().Format(time.RFC3339), "Computed stdev")
 
+	if debug && pid > 0 {
+		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{stdinvx}, nsnps, -1, ast.general.CachePath("stdinvx.txt")) // 1 / sqrt(sxx - (sx*sx/n))
+		SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{stdinvy}, 1, -1, ast.general.CachePath("stdinvy.txt"))     // 1 / sqrt(syy - (sy*sy/n))
+	}
+
 	if pid > 0 {
 		stats := make(crypto.CipherMatrix, multiPhenoSize)
 		for i := 0; i < multiPhenoSize; i++ {
@@ -900,6 +927,164 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
 	return nil, nil // party 0
 }
 
+// covOrthoFactor applies S (see computeCovOrthoFactor) to a target matrix, in either
+// secret-shared or ciphertext form, using whichever sequence of multiply+truncate steps is
+// correct for how S itself is constructed. Deliberately NOT just a plain mpc_core.RMat:
+// Cholesky's S genuinely is one matrix (L^{-1}), so applying it is one multiply+truncate,
+// but eigendecomposition's S is a product of two matrices -- diag(1/sqrt(λ)) and Vᵀ -- that
+// Hoon's original code always applied as two SEPARATE truncated steps directly to the
+// target data, never combined into a standalone ncov-by-ncov matrix first. An earlier
+// version of this fused those two steps into one (mathematically valid in exact arithmetic,
+// since matrix multiplication is associative) and it produced ~1e44-1e46 garbage on the
+// real dataset: associativity holds exactly, but NOT under fixed-point truncation, where
+// where you truncate changes the result. This type exists so each construction can apply
+// itself using its own correct sequencing, without the call sites needing to know which.
+type covOrthoFactor struct {
+	applySS func(mpc_core.RMat) mpc_core.RMat
+	applyCT func(crypto.CipherMatrix) crypto.CipherMatrix
+}
+
+// covOrthoHighPrec optionally carries a higher-fracBits representation of ZtZss/scaling,
+// used only by computeCovOrthoFactor's Cholesky branch. ZtZ's condition number is the
+// square of Z's own (unlike legacy's computeCombinedQV2, which runs an actual QR directly
+// on Z via NetDQRenc), so for SNPs collinear with the covariate/PC space, the standard
+// fracBits can lose enough precision in S that downstream sxx = diag(XᵀX) - diag(BᵀB)
+// catastrophically cancels. Extra fracBits on just this ncov-by-ncov step recovers digits
+// without touching the much more expensive genome-wide path -- ZtZ is formed once, cheaply,
+// regardless of precision. nil disables this (standard-precision path, unchanged).
+type covOrthoHighPrec struct {
+	ZtZss    mpc_core.RMat
+	scaling  mpc_core.RElem
+	dataBits int
+	fracBits int
+}
+
+// computeCovOrthoFactor returns S (ncov-by-ncov) such that SᵀS = scaling²·(ZtZss)^{-1}, so
+// that Q = Zᵀ·Sᵀ is an orthonormal basis for the covariate/PC column space (see the comment
+// at this function's call site for why any such S gives identical association statistics).
+// Two interchangeable constructions:
+//
+//   - Cholesky (default): S = scaling * L^{-1}, where ZtZss = L Lᵀ. Direct, non-iterative,
+//     no eigenvalues computed at all — see CholeskyInvSqrt's doc comment.
+//   - Eigendecomposition (config.UseEigenCovOrtho = true): S = diag(1/sqrt(λ)) * Vᵀ, where
+//     ZtZss = VΛVᵀ. This was the original construction; kept available since its smallest
+//     eigenvalue can carry several percent of run-dependent error from the iterative
+//     shifted-QR algorithm on an ill-conditioned covariate matrix (see EigenDecomp's doc
+//     comment) — useful for comparing against Cholesky on suspect input.
+func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.CryptoParams, ZtZss mpc_core.RMat, scaling mpc_core.RElem, hiPrec *covOrthoHighPrec, numThreads int) covOrthoFactor {
+	mpcObj := ast.general.mpcObj[0]
+	dataBits := mpcObj.GetDataBits()
+	fracBits := mpcObj.GetFracBits()
+	debug := ast.general.config.Debug
+	pid := mpcObj.GetPid()
+
+	if !ast.general.config.UseEigenCovOrtho {
+		var Sss, Lss, LinvSs mpc_core.RMat
+		var revealFracBits int
+		if hiPrec == nil {
+			Sss, Lss, LinvSs = mpcObj.CholeskyInvSqrt(ZtZss, scaling)
+			revealFracBits = fracBits
+		} else {
+			// Temporarily run CholeskyInvSqrt (and everything it calls -- SqrtAndSqrtInverse,
+			// TruncVec/TruncMat) at higher precision, then rescale the result back down to
+			// the standard fracBits before it's used by the rest of this (standard-precision)
+			// pipeline. Scoped to mpcObj[0] only, synchronously, before the per-block parallel
+			// loop starts -- no concurrent goroutine touches this MPC object's precision
+			// fields during the window between save and restore.
+			revealFracBits = hiPrec.fracBits
+			Sss, Lss, LinvSs = func() (mpc_core.RMat, mpc_core.RMat, mpc_core.RMat) {
+				oldDataBits, oldFracBits := mpcObj.GetDataBits(), mpcObj.GetFracBits()
+				defer func() {
+					mpcObj.SetDataBits(oldDataBits)
+					mpcObj.SetFracBits(oldFracBits)
+				}()
+				mpcObj.SetDataBits(hiPrec.dataBits)
+				mpcObj.SetFracBits(hiPrec.fracBits)
+				SssHi, LssHi, LinvSsHi := mpcObj.CholeskyInvSqrt(hiPrec.ZtZss, hiPrec.scaling)
+				return mpcObj.TruncMat(SssHi, hiPrec.dataBits, hiPrec.fracBits-fracBits), LssHi, LinvSsHi
+			}()
+		}
+
+		// L and Linv are the un-scaled Cholesky factor of ZtZss and its inverse -- dumped
+		// so they can be diffed directly against testutil.Cholesky's plaintext L/Linv on
+		// the same input, isolating whether a precision issue is fixed-point truncation
+		// here or ZtZ's own conditioning (see CholeskyInvSqrt's doc comment).
+		if debug && pid > 0 {
+			Lr := mpcObj.RevealSymMat(Lss).ToFloat(revealFracBits)
+			LinvR := mpcObj.RevealSymMat(LinvSs).ToFloat(revealFracBits)
+			SaveFloatMatrixToFileRowMajor(ast.general.CachePath("cholesky_L.txt"), Lr)
+			SaveFloatMatrixToFileRowMajor(ast.general.CachePath("cholesky_Linv.txt"), LinvR)
+
+			// Sss is always rescaled back to the standard fracBits before being returned
+			// above (both branches), regardless of revealFracBits/hiPrec -- unlike Lss/LinvSs,
+			// which stay at whatever precision they were computed at.
+			Sr := mpcObj.RevealSymMat(Sss).ToFloat(fracBits)
+			SaveFloatMatrixToFileRowMajor(ast.general.CachePath("cholesky_S.txt"), Sr)
+		}
+
+		Sct := mpcObj.SSToCMat(cryptoParams, Sss)
+
+		// Sct is the ciphertext conversion of Sss actually used by applyCT (unlike
+		// cholesky_S.txt, which reveals Sss directly via the SS-domain RevealSymMat path
+		// that applySS uses instead). If SSToCMat introduces an error that RevealSymMat
+		// doesn't, this diverges from cholesky_S.txt even though both claim to be S.
+		if debug && pid > 0 {
+			SaveMatrixToFile(cryptoParams, mpcObj, Sct, len(Sss), -1, ast.general.CachePath("cholesky_Sct.txt"))
+		}
+
+		return covOrthoFactor{
+			applySS: func(A mpc_core.RMat) mpc_core.RMat {
+				R := mpcObj.SSMultMat(Sss, A)
+				return mpcObj.TruncMat(R, dataBits, fracBits)
+			},
+			applyCT: func(A crypto.CipherMatrix) crypto.CipherMatrix {
+				return CMultMatRowTimesRow(cryptoParams, Sct, A, numThreads)
+			},
+		}
+	}
+
+	rtype := mpcObj.GetRType()
+	useBoolean := mpcObj.GetBooleanShareFlag()
+	ncov := len(ZtZss)
+
+	Vtss, Lss := mpcObj.EigenDecomp(ZtZss)
+	_, LsqrtInvss := mpcObj.SqrtAndSqrtInverse(Lss, useBoolean)
+
+	LsqrtInvss.MulScalar(scaling)
+	LsqrtInvss = mpcObj.TruncVec(LsqrtInvss, dataBits, fracBits)
+
+	LsqrtInvDiagss := mpc_core.InitRMat(rtype.Zero(), ncov, ncov)
+	for i := 0; i < ncov; i++ {
+		LsqrtInvDiagss[i][i] = LsqrtInvss[i].Copy()
+	}
+
+	// Ciphertext counterparts for applyCT, mirroring the secret-shared ones above.
+	Vt := mpcObj.SSToCMat(cryptoParams, Vtss)
+	LsqrtInv := crypto.CZeros(cryptoParams, len(LsqrtInvss)) // one ciphertext per eigenvalue
+	for i := range LsqrtInv {
+		LsqrtInv[i] = mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{LsqrtInvss[i]})
+		if mpcObj.GetPid() > 0 { // no share on party 0; SStoCiphertext left it nil
+			LsqrtInv[i] = crypto.InnerSumAll(cryptoParams, crypto.CipherVector{LsqrtInv[i]})
+		}
+	}
+
+	return covOrthoFactor{
+		applySS: func(A mpc_core.RMat) mpc_core.RMat {
+			R := mpcObj.SSMultMat(Vtss, A)
+			R = mpcObj.TruncMat(R, dataBits, fracBits)
+			R = mpcObj.SSMultMat(LsqrtInvDiagss, R)
+			return mpcObj.TruncMat(R, dataBits, fracBits)
+		},
+		applyCT: func(A crypto.CipherMatrix) crypto.CipherMatrix {
+			B := CMultMatRowTimesRow(cryptoParams, Vt, A, numThreads)
+			for i := range B {
+				B[i] = crypto.CMultScalar(cryptoParams, B[i], LsqrtInv[i])
+			}
+			return B
+		},
+	}
+}
+
 // Optimized version that assumes PCs are provided in plaintext.
 // Performs multiplications on local plaintext matrices to avoid expensive cipher-plain operations
 // on the large genotype matrix. Corrects for covariates post-multiplication using the inverse covariance matrix
@@ -914,8 +1099,6 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	mpcPar := ast.general.mpcObj
 	mpcObj := mpcPar[0]
 	fracBits := mpcObj.GetFracBits()
-	dataBits := mpcObj.GetDataBits()
-	useBoolean := mpcObj.GetBooleanShareFlag()
 	rtype := mpcObj.GetRType()
 
 	gwasParams := ast.general.gwasParams
@@ -948,8 +1131,12 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		_, cols := Zt.Dims()
 
 		ones := mat.NewDense(1, cols, nil)
-		for i := 0; i < cols; i++ {
-			ones.Set(0, i, 1)
+		if pid > 0 {
+			// Party 0 holds no share of the data; its Zt is a dummy placeholder and must
+			// stay all-zero so that it contributes nothing to the shared Zt*Z below.
+			for i := 0; i < cols; i++ {
+				ones.Set(0, i, 1)
+			}
 		}
 
 		covWithIntercept := mat.NewDense(ncov+1, cols, nil)
@@ -972,49 +1159,48 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	var tmp mat.SymDense
 	tmp.SymOuterK(nrowsTotalInvSqrt, Zt) // Scale Zt*Z by 1/sqrt(n)
 	ZtZss := mpc.DenseToRMat(rtype, &tmp, fracBits)
+
+	// Also capture ZtZ at higher fracBits from the same plaintext tmp, before it's
+	// discarded -- see covOrthoHighPrec's doc comment. Only meaningful for the Cholesky
+	// branch (eigen already has its own, separate precision story via EigenDecomp).
+	var hiPrec *covOrthoHighPrec
+	if ast.general.config.UseHighPrecCovOrtho && !ast.general.config.UseEigenCovOrtho {
+		hiDataBits, hiFracBits := mpcObj.GetDataBits()*2, fracBits*2
+		hiPrec = &covOrthoHighPrec{
+			ZtZss:    mpc.DenseToRMat(rtype, &tmp, hiFracBits),
+			scaling:  rtype.FromFloat64(math.Sqrt(math.Sqrt(float64(nrowsTotal))), hiFracBits),
+			dataBits: hiDataBits,
+			fracBits: hiFracBits,
+		}
+	}
 	tmp.Reset()
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: sub-task: Starting calculation of covariate correction factor")
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Calculating inverse of covariate covariance matrix: started")
 
-	Vtss, Lss := mpcObj.EigenDecomp(ZtZss)
-	_, LsqrtInvss := mpcObj.SqrtAndSqrtInverse(Lss, useBoolean)
-
-	// Let: S = diag(LsqrtInv) * Vᵀ / sqrt(sqrt(n))
-	// Then: S * Zᵀ = Qᵀ where Q is an orthogonal basis of Z (column space)
-	// We replace Qᵀ with S * Zᵀ in subsequent computations
-
-	// Important note on scaling: above requires a factor of 1/sqrt(sqrt(n))
-	// Later matrix mult contributes 1/sqrt(n), so we pre-multiply by sqrt(sqrt(n)) here
-	// Ensure that QᵀA for any A involves A pre-scaled by 1/sqrt(n)
-
+	// S combines downstream as (S·A)ᵀ(S·B) for various A, B (sxx via ΣB[c]², sxy via
+	// YtQ·B, ...), so any S with SᵀS = sqrt(n)·(ZtZss)^{-1} is interchangeable — see
+	// computeCovOrthoFactor for the two constructions available (config.UseEigenCovOrtho).
 	scaling := rtype.FromFloat64(math.Sqrt(math.Sqrt(float64(nrowsTotal))), fracBits)
-	LsqrtInvss.MulScalar(scaling)
-	LsqrtInvss = mpcObj.TruncVec(LsqrtInvss, dataBits, fracBits)
 
-	// Convert to matrix to simplify subsequent matrix multiplications
-	LsqrtInvDiagss := mpc_core.InitRMat(rtype.Zero(), ncov, ncov)
-	for i := 0; i < ncov; i++ {
-		LsqrtInvDiagss[i][i] = LsqrtInvss[i].Copy()
+	// ZtZ is the earliest checkpoint in the covariate-orthogonalization chain -- dumped
+	// before it's decomposed at all, so a divergence here isolates to how ZtZ itself was
+	// formed (data/QC/individual-count mismatch) rather than to Cholesky or anything
+	// downstream of it. Compare against oracle_ZtZ.txt.
+	if debug && pid > 0 {
+		ZtZr := mpcObj.RevealSymMat(ZtZss).ToFloat(fracBits)
+		SaveFloatMatrixToFileRowMajor(ast.general.CachePath("ZtZ.txt"), ZtZr)
 	}
 
-	// Also prepare ciphertext versions
-	Vt := mpcObj.SSToCMat(cryptoParams, Vtss)
-	LsqrtInv := crypto.CZeros(cryptoParams, len(LsqrtInvss)) // one ciphertext per eigenvalue
-	for i := range LsqrtInv {
-		LsqrtInv[i] = mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{LsqrtInvss[i]})
-		LsqrtInv[i] = crypto.InnerSumAll(cryptoParams, crypto.CipherVector{LsqrtInv[i]})
-	}
-	// TODO: Check that ciphertexts in LsqrtInv include corresponding eigenvalue in every slot
+	covOrtho := ast.computeCovOrthoFactor(cryptoParams, ZtZss, scaling, hiPrec, numThreads)
 
-	// At this stage, we will only use LsqrtInvDiagss and Vtss for projecting out the covariates
-	ZtZss, Lss, LsqrtInvss, LsqrtInvss = nil, nil, nil, nil
+	ZtZss = nil
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Calculating inverse of covariate covariance matrix: finished")
 
-	var varx, sx, sxx crypto.CipherVector
-	var vary, sy, sxy crypto.CipherMatrix
+	var varx, sx, sxx, xtxdiag crypto.CipherVector
+	var vary, sy, sxy, ztx, qtx crypto.CipherMatrix
 	var nsnps, numCtx int
 	var outFilter []bool
 
@@ -1040,10 +1226,16 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		ZtY1ss = mpc_core.InitRMat(rtype.Zero(), ncov, npheno+1)
 	}
 
-	QtY1ss := mpcObj.SSMultMat(Vtss, ZtY1ss)
-	QtY1ss = mpcObj.TruncMat(QtY1ss, dataBits, fracBits)
-	QtY1ss = mpcObj.SSMultMat(LsqrtInvDiagss, QtY1ss)
-	QtY1ss = mpcObj.TruncMat(QtY1ss, dataBits, fracBits)
+	QtY1ss := covOrtho.applySS(ZtY1ss)
+
+	// QtY1 = Qᵀ[Y;1] is the covariate projection applied to phenotypes+intercept -- the
+	// same S-application step as the per-block QtX (qtx.txt) below, but computed once,
+	// so it's cheap to dump and a useful earlier checkpoint: if this already diverges,
+	// the bug is in S/applySS itself, not in anything specific to genotype blocks.
+	if debug && pid > 0 {
+		QtY1r := mpcObj.RevealSymMat(QtY1ss).ToFloat(fracBits)
+		SaveFloatMatrixToFileRowMajor(ast.general.CachePath("QtY1.txt"), QtY1r)
+	}
 
 	// Split into QtY and Qt1
 	YtQss := mpc_core.InitRMat(rtype.Zero(), npheno, ncov)
@@ -1081,7 +1273,7 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		// sxy = Yᵀ(I-QQᵀ)X = YᵀX - (YᵀQ)(QᵀX)
 
 		// In parallel:
-		// (1) Compute ZᵀX (then later compute B = QᵀX = LsqrtInvDiag * Vᵀ * (ZᵀX)/sqrt(n))
+		// (1) Compute ZᵀX (then later compute B = QᵀX = S * (ZᵀX)/sqrt(n))
 		// (2) Compute YᵀX (for sxy = Yᵀ*X - (YᵀQ)B
 		// (3) Compute 1ᵀX (for sx = 1ᵀX - (1ᵀQ)B) --> Computed separately as dosageSum
 		// (4) Compute diag(XᵀX) (for sxx = diag(XᵀX) - diag(BᵀB)) --> Computed separately as dosageSqSum
@@ -1097,6 +1289,18 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		sxBlocks := make([]crypto.CipherMatrix, numBlocks)
 		sxxBlocks := make([]crypto.CipherMatrix, numBlocks)
 		sxyBlocks := make([]crypto.CipherMatrix, numBlocks)
+
+		// Debug-only checkpoints bracketing the S-application step: ztxBlocks is B's
+		// input (ZtXscaled, before applyCT), qtxBlocks is B itself (after applyCT), and
+		// xtxBlocks is diag(XtX) before the BtB subtraction that turns it into sxx. Diffed
+		// against the oracle's own ztx/qtx/xtxdiag dumps, these isolate a divergence to
+		// before S is applied, to the S-multiply itself, or to the final BtB subtraction.
+		var ztxBlocks, qtxBlocks, xtxBlocks []crypto.CipherMatrix
+		if debug {
+			ztxBlocks = make([]crypto.CipherMatrix, numBlocks)
+			qtxBlocks = make([]crypto.CipherMatrix, numBlocks)
+			xtxBlocks = make([]crypto.CipherMatrix, numBlocks)
+		}
 
 		for b := 0; b < numBlocks; b++ {
 			if !ast.general.IsBlockForAssocTest(b) {
@@ -1130,10 +1334,18 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 				OnetXsq, _ := crypto.EncryptFloatVector(cryptoParams, dosageSqSum)
 				OnetXsq = mpcObj.Network.AggregateCVec(cryptoParams, OnetXsq)
 
-				// Compute B = QᵀX = diag(LsqrtInv) * Vᵀ * (ZᵀX)/sqrt(n)
-				B := CMultMatRowTimesRow(cryptoParams, Vt, ZtXscaled, numThreads)
-				for i := range B {
-					B[i] = crypto.CMultScalar(cryptoParams, B[i], LsqrtInv[i])
+				if debug {
+					// Snapshot before the BtB-subtraction loop below mutates OnetXsq in
+					// place (evaluator.Sub writes into sxxBlocks[b][0], which IS OnetXsq).
+					xtxBlocks[b] = crypto.CipherMatrix{crypto.CopyEncryptedVector(OnetXsq)}
+				}
+
+				// Compute B = QᵀX = S * (ZᵀX)/sqrt(n)
+				B := covOrtho.applyCT(ZtXscaled)
+
+				if debug {
+					ztxBlocks[b] = ZtXscaled
+					qtxBlocks[b] = B
 				}
 
 				// Compute sx = 1ᵀ(I - QQᵀ)X
@@ -1146,7 +1358,7 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 				}
 
 				// Compute sxy = Yᵀ(I - QQᵀ)X
-				sxyBlocks[b] = crypto.CZeroMat(cryptoParams, npheno, numCtx)
+				sxyBlocks[b] = make(crypto.CipherMatrix, npheno)
 				tmp := CMultMatRowTimesRow(cryptoParams, YtQ, B, numThreads)
 				for i := range sxyBlocks[b] {
 					sxyBlocks[b][i] = crypto.CSub(cryptoParams, YtX[i], tmp[i])
@@ -1156,15 +1368,26 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 
 				// Compute sxx = diag(XᵀX) - diag(BᵀB)
 				sxxBlocks[b] = crypto.CipherMatrix{OnetXsq}
-				cryptoParams.WithEvaluator(func(evaluator ckks.Evaluator) error {
+				if err := cryptoParams.WithEvaluator(func(evaluator ckks.Evaluator) error {
 					for c := range B {
 						for j := range B[c] {
 							tmp := evaluator.MulRelinNew(B[c][j], B[c][j])
+							// Not required for correctness: Lattigo's Sub auto-aligns mismatched
+							// scales (it upscales the lower-scale operand before subtracting), so
+							// omitting this would still decode correctly. Rescaling here instead
+							// keeps sxxBlocks at the codebase's canonical scale — matching every
+							// other ct*ct product (see CMultScalar, CMultConstRescale) — rather
+							// than leaving it elevated to Δ² for the rest of the pipeline.
+							if err := evaluator.Rescale(tmp, cryptoParams.Params.Scale(), tmp); err != nil {
+								return err
+							}
 							evaluator.Sub(sxxBlocks[b][0][j], tmp, sxxBlocks[b][0][j])
 						}
 					}
 					return nil
-				})
+				}); err != nil {
+					log.Fatalf("block %d: rescaling B^2 before sxx subtraction: %v", b+1, err)
+				}
 
 				log.LLvl1(time.Now().Format(time.RFC3339), "block", b+1, "/", numBlocks, "computed sxx")
 
@@ -1179,6 +1402,13 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		sxy = crypto.ConcatCipherMatrix(sxyBlocks)
 		sxx = crypto.ConcatCipherMatrix(sxxBlocks)[0]
 		sxBlocks, sxxBlocks, sxyBlocks = nil, nil, nil
+
+		if debug {
+			ztx = crypto.ConcatCipherMatrix(ztxBlocks)
+			qtx = crypto.ConcatCipherMatrix(qtxBlocks)
+			xtxdiag = crypto.ConcatCipherMatrix(xtxBlocks)[0]
+			ztxBlocks, qtxBlocks, xtxBlocks = nil, nil, nil
+		}
 
 		totLen := 0
 		for i := range filtOut {
@@ -1268,6 +1498,14 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 			SaveMatrixToFile(cryptoParams, mpcObj, sxy, len(sxy[0])*slots, -1, ast.general.CachePath("sxy.txt"))                      // sxy
 			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{varx}, len(varx)*slots, -1, ast.general.CachePath("varx.txt")) // sxx - (sx*sx/n)
 			SaveMatrixToFile(cryptoParams, mpcObj, vary, 1, -1, ast.general.CachePath("vary.txt"))                                    // syy - (sy*sy/n)
+
+			// ztx/qtx bracket the S-application step (see the ztxBlocks/qtxBlocks comment
+			// above); xtxdiag is diag(XtX) before the BtB subtraction that produces sxx.
+			// Same numCtx*slots padding as sxx.txt -- use xfilt.bin to drop it. ztx/qtx
+			// have ncov rows (one SaveMatrixToFile call each, like sxy's npheno rows).
+			SaveMatrixToFile(cryptoParams, mpcObj, ztx, len(ztx[0])*slots, -1, ast.general.CachePath("ztx.txt"))                               // (ZtX)/sqrt(n), pre-S
+			SaveMatrixToFile(cryptoParams, mpcObj, qtx, len(qtx[0])*slots, -1, ast.general.CachePath("qtx.txt"))                               // B = QtX, post-S
+			SaveMatrixToFile(cryptoParams, mpcObj, crypto.CipherMatrix{xtxdiag}, len(xtxdiag)*slots, -1, ast.general.CachePath("xtxdiag.txt")) // diag(XtX), pre-BtB
 		}
 	}
 
@@ -1371,7 +1609,9 @@ func ComputeStdInv(cryptoParams *crypto.CryptoParams, mpcPar mpc.ParallelMPC, va
 	stdinvy := make(crypto.CipherVector, npheno)
 	for i := 0; i < npheno; i++ {
 		stdinvy[i] = mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{stdinvSS[nsnps+i]})
-		stdinvy[i] = crypto.Rebalance(cryptoParams, stdinvy[i])
+		if pid > 0 { // no share on party 0; SStoCiphertext left it nil
+			stdinvy[i] = crypto.InnerSumAll(cryptoParams, crypto.CipherVector{stdinvy[i]})
+		}
 	}
 
 	return stdinvx, stdinvy

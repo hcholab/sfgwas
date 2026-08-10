@@ -121,8 +121,16 @@ func (mpcObj *MPC) SSToCMat(cryptoParams *crypto.CryptoParams, rm mpc_core.RMat)
 				if end > nElemCol {
 					end = nElemCol
 				}
-
-				pm[i][j] = encoder.EncodeRVecNew(share[i][start:end], uint64(end-start), mpcObj.GetFracBits())
+				// EncodeRVecNew must be given a full-width, zero-padded vector: passing a
+				// short vector (slots < cryptoParams.GetSlots()) makes Lattigo take its
+				// sparse-packing path (gap := params.Slots()/slots), which embeds the
+				// values with gaps rather than zero-padding them, and everything else in
+				// this codebase (InnerSumAll, decode, etc.) assumes dense full-width
+				// packing. A mismatch here silently replicates the encoded values with
+				// period `slots` across the ciphertext instead of zero-filling it.
+				padded := mpc_core.InitRVec(rtype, slots)
+				copy(padded, share[i][start:end])
+				pm[i][j] = encoder.EncodeRVecNew(padded, uint64(slots), mpcObj.GetFracBits())
 
 				start += slots
 				end += slots

@@ -56,14 +56,18 @@ type Config struct {
 	NumOversample int `toml:"num_oversampling"`
 	NumPowerIters int `toml:"num_power_iters"`
 
-	SkipQC             bool `toml:"skip_qc"`
-	SkipPCA            bool `toml:"skip_pca"`
-	UseCachedQC        bool `toml:"use_cached_qc"`
-	UseCachedPCA       bool `toml:"use_cached_pca"`
-	UseCachedCombinedQ bool `toml:"use_cached_combined_q"`
-	UsePlainMultPhase3 bool `toml:"use_plain_mult_phase_3"`
-	SkipPowerIter      bool `toml:"skip_power_iter"`
-	PCARestartIter     int  `toml:"restart_pca_from_iter"`
+	SkipQC                 bool `toml:"skip_qc"`
+	SkipPCA                bool `toml:"skip_pca"`
+	UseCachedQC            bool `toml:"use_cached_qc"`
+	UseCachedPCA           bool `toml:"use_cached_pca"`
+	UseCachedCombinedQ     bool `toml:"use_cached_combined_q"`
+	UsePlainMultPhase3     bool `toml:"use_plain_mult_phase_3"`
+	UseEigenCovOrtho       bool `toml:"use_eigen_cov_ortho"`
+	UseHighPrecCovOrtho    bool `toml:"use_high_prec_cov_ortho"`
+	SkipPowerIter          bool `toml:"skip_power_iter"`
+	UseCachedPowerIter     bool `toml:"use_cached_power_iter"`
+	PowerIterCacheInterval int  `toml:"power_iter_cache_interval"`
+	PCARestartIter         int  `toml:"restart_pca_from_iter"`
 
 	IndMissUB    float64 `toml:"imiss_ub"`
 	HetLB        float64 `toml:"het_lb"`
@@ -326,6 +330,13 @@ func (g *ProtocolInfo) Phase2() (crypto.CipherMatrix, *mat.Dense) {
 	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: Starting Principal Component Analysis")
 
 	var Qpca crypto.CipherMatrix
+	// Set directly from cache below when available, so the return path doesn't need to
+	// round-trip QpcaPlain through disk (encrypt it into Qpca, write pca.txt, immediately
+	// read pca.txt back) just to reconstruct data already sitting in memory a few lines
+	// earlier. That round-trip is also a real correctness hazard on a network filesystem:
+	// the immediate re-read can race the write's visibility and see a truncated file,
+	// surfacing later as a confusing "QpcPlain has N rows; expected npc=M" in Phase3.
+	var QpcaPlainDense *mat.Dense
 	pcaCacheFile := g.CachePath("Qpc.txt")
 	if g.config.UseCachedPCA {
 
@@ -333,6 +344,12 @@ func (g *ProtocolInfo) Phase2() (crypto.CipherMatrix, *mat.Dense) {
 			// TODO cache ciphertexts instead
 			QpcaPlain := LoadMatrixFromFileFloat(pcaCacheFile, ',')
 			Qpca, _, _, _ = crypto.EncryptFloatMatrixRow(g.cps, QpcaPlain)
+
+			var err error
+			QpcaPlainDense, err = DenseFrom2D(QpcaPlain)
+			if err != nil {
+				log.Fatalf("Phase2: malformed %s: %v", pcaCacheFile, err)
+			}
 		} else {
 			Qpca = make(crypto.CipherMatrix, g.config.NumPCs)
 		}
@@ -366,7 +383,14 @@ func (g *ProtocolInfo) Phase2() (crypto.CipherMatrix, *mat.Dense) {
 	}
 
 	var QpcaPlain *mat.Dense
-	if pid > 0 {
+	if QpcaPlainDense != nil {
+		// Cached-PCA path: already have it in memory (see above), no disk round-trip.
+		QpcaPlain = QpcaPlainDense
+	} else if pid > 0 {
+		// Freshly-computed-PCA path: never had a plaintext copy in memory (Qpca came
+		// straight out of PopulationStratification encrypted), so this read is the
+		// first time this party actually sees the plaintext values, not a redundant
+		// round-trip -- still needed here.
 		QpcaPlain = LoadMatrixFromFile(g.OutPath("pca.txt"), ',')
 	} else {
 		QpcaPlain = mat.NewDense(g.config.NumPCs, 1, nil)
@@ -583,7 +607,7 @@ func (g *ProtocolInfo) GeneratePCAInput(numSnpsPCA int, snpFiltPCA []bool, isPge
 				m := g.genoBlockSizes[chr]
 				numSnpsPCAPerBlock[chr] = SumBool(snpFiltPCA[shift : shift+m])
 
-				FilterMatrixFilePgen(pgenPrefix, numIndsPCA, numSnpsPCAPerBlock[chr], g.config.SampleKeepFile, g.config.SnpIdsFile, shift, snpFiltPCA[shift:shift+m], outFile)
+				FilterMatrixFilePgen(pgenPrefix, numIndsPCA, numSnpsPCAPerBlock[chr], g.config.SampleKeepFile, g.config.SnpIdsFile, shift, snpFiltPCA[shift:shift+m], outFile, g.config.LocalNumThreads)
 
 				shift += m
 			}

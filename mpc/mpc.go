@@ -220,6 +220,10 @@ func (mpcObj *MPC) SetFracBits(f int) {
 	mpcObj.fracBits = f
 }
 
+func (mpcObj *MPC) SetDataBits(k int) {
+	mpcObj.dataBits = k
+}
+
 func (mpcObj *MPC) GetRType() mpc_core.RElem {
 	return mpcObj.rtype
 }
@@ -2550,6 +2554,15 @@ func (mpcObj *MPC) SortRowsDescend(A mpc_core.RMat, w mpc_core.RVec) (ASorted mp
 	return
 }
 
+// EigenDecomp computes the eigendecomposition of symmetric A via shifted QR with
+// deflation. Precision degrades for eigenvalues small relative to the largest one
+// (ill-conditioned A): each of the n-1 deflation steps carries forward the fixed-point
+// truncation error of the ones before it, and 1/sqrt(lambda) amplifies whatever error
+// survives in a small lambda. Raising ITER_PER_EVAL does not reliably help — the
+// dominant error source is accumulated truncation, not QR convergence — so callers
+// needing precise inverse-square-roots of a matrix that may be ill-conditioned should
+// prefer a direct method that avoids eigenvalues entirely where one is available (e.g.
+// CholeskyInvSqrt for a small, symmetric positive-definite matrix).
 func (mpcObj *MPC) EigenDecomp(A mpc_core.RMat) (V mpc_core.RMat, L mpc_core.RVec) {
 	pid := mpcObj.GetPid()
 
@@ -2630,6 +2643,97 @@ func (mpcObj *MPC) EigenDecomp(A mpc_core.RMat) (V mpc_core.RMat, L mpc_core.RVe
 
 	fmt.Println("EigenDecomp: complete")
 	return
+}
+
+// CholeskyInvSqrt computes S (n-by-n) such that S = scaling * L^{-1}, where A = L Lᵀ
+// is the Cholesky decomposition of symmetric positive-definite A (L lower triangular).
+// Since (L^{-1})(L^{-1})ᵀ = A^{-1}, S is an inverse-square-root of A up to the caller's
+// scaling and up to right-multiplication by an orthogonal matrix — interchangeable with
+// EigenDecomp-derived diag(1/sqrt(L))*Vᵀ for any use that only needs SᵀS = scaling²A^{-1}
+// (e.g. projecting out a covariate design), not the eigenvalues/eigenvectors themselves.
+//
+// Cholesky-Crout is a direct, non-iterative O(n) recurrence: computing S this way avoids
+// EigenDecomp's shifted-QR-with-deflation, whose n-1 sequential deflation steps (each
+// wrapping several QR iterations, each truncating twice) compound enough fixed-point
+// rounding that its smallest eigenvalue can carry several percent of error — and more
+// iterations don't reliably help, since the dominant error source is accumulated
+// truncation rather than QR convergence (see EigenDecomp's doc comment). Cholesky needs
+// only ~n(n+1)/2 truncating multiplications total, with no deflation to compound across.
+// Appropriate for small n (e.g. covariate count): the O(n) sequential dependency chain
+// (each column needs the previous ones) costs one MPC round trip per column.
+//
+// Also returns L and its (unscaled, pre-truncation-of-the-caller's-scaling) inverse
+// L^{-1} — not needed for S itself, but callers debugging precision loss want the
+// factor and its inverse individually, revealed and compared against a plaintext
+// Cholesky decomposition of the same A (see testutil.Cholesky), rather than only the
+// combined, scaled S.
+func (mpcObj *MPC) CholeskyInvSqrt(A mpc_core.RMat, scaling mpc_core.RElem) (S, L, Linv mpc_core.RMat) {
+	rtype := A.Type()
+	n := len(A)
+	dataBits := mpcObj.dataBits
+	fracBits := mpcObj.fracBits
+
+	L = mpc_core.InitRMat(rtype.Zero(), n, n)
+	LinvDiag := mpc_core.InitRVec(rtype.Zero(), n)
+
+	for j := 0; j < n; j++ {
+		sumjj := A[j][j].Copy()
+		if j > 0 {
+			sq := mpcObj.SSMultElemVec(L[j][:j], L[j][:j])
+			sq = mpcObj.TruncVec(sq, dataBits, fracBits)
+			for k := 0; k < j; k++ {
+				sumjj = sumjj.Sub(sq[k])
+			}
+		}
+		ljj, ljjInv := mpcObj.SqrtAndSqrtInverse(mpc_core.RVec{sumjj}, false)
+		L[j][j] = ljj[0]
+		LinvDiag[j] = ljjInv[0]
+
+		for i := j + 1; i < n; i++ {
+			val := A[i][j].Copy()
+			if j > 0 {
+				prod := mpcObj.SSMultElemVec(L[i][:j], L[j][:j])
+				prod = mpcObj.TruncVec(prod, dataBits, fracBits)
+				for k := 0; k < j; k++ {
+					val = val.Sub(prod[k])
+				}
+			}
+			lij := mpcObj.SSMultElemVec(mpc_core.RVec{val}, mpc_core.RVec{ljjInv[0]})
+			lij = mpcObj.TruncVec(lij, dataBits, fracBits)
+			L[i][j] = lij[0]
+		}
+	}
+
+	// Invert L (lower triangular) via forward substitution: for each column j,
+	// Linv[j][j] = 1/L[j][j] (already have it), and for i>j,
+	// Linv[i][j] = -(sum_{k=j}^{i-1} L[i][k]*Linv[k][j]) / L[i][i].
+	Linv = mpc_core.InitRMat(rtype.Zero(), n, n)
+	for j := 0; j < n; j++ {
+		Linv[j][j] = LinvDiag[j].Copy()
+		for i := j + 1; i < n; i++ {
+			lrow := L[i][j:i]
+			linvcol := make(mpc_core.RVec, i-j)
+			for k := j; k < i; k++ {
+				linvcol[k-j] = Linv[k][j]
+			}
+			prod := mpcObj.SSMultElemVec(lrow, linvcol)
+			prod = mpcObj.TruncVec(prod, dataBits, fracBits)
+			sum := rtype.Zero()
+			for _, p := range prod {
+				sum = sum.Add(p)
+			}
+			neg := mpcObj.SSMultElemVec(mpc_core.RVec{sum}, mpc_core.RVec{LinvDiag[i]})
+			neg = mpcObj.TruncVec(neg, dataBits, fracBits)
+			Linv[i][j] = rtype.Zero().Sub(neg[0])
+		}
+	}
+
+	// S is scaling * L^{-1}, computed from a copy so the returned Linv stays the plain
+	// (unscaled) inverse -- MulScalar mutates in place and would otherwise clobber it.
+	S = Linv.Copy()
+	S.MulScalar(scaling)
+	S = mpcObj.TruncMat(S, dataBits, fracBits)
+	return S, L, Linv
 }
 
 /* PARALLEL ROUTINES*/

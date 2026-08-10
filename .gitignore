@@ -6,3 +6,5 @@ out/
 .venv/
 lattigo/
 mpc-core/
+*.log
+compare_results/

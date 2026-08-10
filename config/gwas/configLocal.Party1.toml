@@ -19,6 +19,6 @@ output_dir = "out/party1"
 cache_dir = "cache/party1"
 
 ## Computational paramters
-local_num_threads = 8
+local_num_threads = 16
 memory_limit = 40000000000
 assoc_num_blocks_parallel = 1  # Recommend local_num_threads divided by 4 or 8
