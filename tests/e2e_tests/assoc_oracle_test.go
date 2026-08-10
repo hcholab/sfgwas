@@ -35,6 +35,67 @@ import (
 //
 //	./compare_assoc_paths.sh && go test ./tests/e2e_tests/ -run TestAssocPlaintextOracle -v
 func TestAssocPlaintextOracle(t *testing.T) {
+	runAssocPlaintextOracle(t, "", func(t *testing.T, Z *mat.Dense, ntot int, dumpDir string) *mat.Dense {
+		return testutil.GramSchmidt(Z)
+	})
+}
+
+// TestAssocPlaintextOracleCholesky is TestAssocPlaintextOracle's same absolute
+// reference, but projects out covariates via Cholesky-QR (testutil.Cholesky)
+// instead of Gram-Schmidt -- the identical mathematical path as the secure
+// protocol's default covariate-orthogonalization branch (mpc.MPC.CholeskyInvSqrt,
+// wired up in gwas.computeCovOrthoFactor), just in plain float64 instead of
+// truncated fixed-point secret shares.
+//
+// Two comparisons this enables that TestAssocPlaintextOracle alone can't:
+//
+//   - A divergence from TestAssocPlaintextOracle's Gram-Schmidt result that shows up
+//     HERE too (both plaintext, both full float64 precision) points at Z'Z's
+//     conditioning, not fixed-point truncation -- Cholesky-QR is exactly as
+//     sensitive to an ill-conditioned Z'Z as the secure protocol's CholeskyInvSqrt
+//     is (see its doc comment), where Gram-Schmidt sidesteps the question entirely.
+//   - With SFGWAS_ORACLE_DUMP set, this dumps oracle_cholesky_L.txt and
+//     oracle_cholesky_Linv.txt at the same scale (alpha=1/sqrt(n)) the protocol
+//     itself uses, so they're directly diffable against a debug=true run's own
+//     cache/party*/cholesky_L.txt and cholesky_Linv.txt -- isolating a divergence to
+//     the exact Cholesky-Crout step where the two stop agreeing, rather than only
+//     seeing it show up several stages later in sxx/sxy.
+func TestAssocPlaintextOracleCholesky(t *testing.T) {
+	runAssocPlaintextOracle(t, "cholesky_", func(t *testing.T, Z *mat.Dense, ntot int, dumpDir string) *mat.Dense {
+		alpha := 1 / math.Sqrt(float64(ntot)) // matches ZtZss's scale in gwas.GetAssociationStatsPlainMult
+		Q, L, Linv, err := testutil.Cholesky(Z, alpha)
+		if err != nil {
+			t.Fatalf("cholesky: %v", err)
+		}
+		if dumpDir != "" {
+			gwas.SaveFloatMatrixToFileRowMajor(filepath.Join(dumpDir, "oracle_cholesky_L.txt"), denseRows(L))
+			gwas.SaveFloatMatrixToFileRowMajor(filepath.Join(dumpDir, "oracle_cholesky_Linv.txt"), denseRows(Linv))
+			t.Logf("dumped oracle Cholesky L/Linv to %s", dumpDir)
+		}
+		return Q
+	})
+}
+
+// denseRows converts m to row-major [][]float64, e.g. for gwas.SaveFloatMatrixToFileRowMajor.
+func denseRows(m *mat.Dense) [][]float64 {
+	r, c := m.Dims()
+	rows := make([][]float64, r)
+	for i := range rows {
+		rows[i] = make([]float64, c)
+		for j := 0; j < c; j++ {
+			rows[i][j] = m.At(i, j)
+		}
+	}
+	return rows
+}
+
+// runAssocPlaintextOracle holds the logic shared by TestAssocPlaintextOracle and
+// TestAssocPlaintextOracleCholesky: load the pooled data, compute an orthonormal
+// covariate basis via computeQ, stream the genotype blocks, and compare the
+// resulting per-SNP statistics against the protocol's own assoc_*.txt output.
+// filePrefix (e.g. "" or "cholesky_") namespaces the SFGWAS_ORACLE_DUMP output so
+// two variants can dump to the same directory without overwriting each other.
+func runAssocPlaintextOracle(t *testing.T, filePrefix string, computeQ func(t *testing.T, Z *mat.Dense, ntot int, dumpDir string) *mat.Dense) {
 	root := repoRoot(t)
 	if err := os.Chdir(root); err != nil { // FilterMatrixFilePgen shells out via a relative path
 		t.Fatalf("chdir %s: %v", root, err)
@@ -136,7 +197,9 @@ func TestAssocPlaintextOracle(t *testing.T) {
 	}
 	t.Logf("pooled: %d individuals, %d covariates (incl. intercept and %d PCs), %d phenotypes", ntot, k, npc, npheno)
 
-	if dumpDir := os.Getenv("SFGWAS_ORACLE_DUMP"); dumpDir != "" {
+	dumpDir := os.Getenv("SFGWAS_ORACLE_DUMP")
+
+	if dumpDir != "" {
 		nInvSqrt := math.Sqrt(1 / float64(ntot))
 		var A mat.SymDense
 		A.SymOuterK(nInvSqrt, mat.DenseCopyOf(Z.T()))
@@ -155,7 +218,7 @@ func TestAssocPlaintextOracle(t *testing.T) {
 	}
 
 	// ---- Explicit orthonormal basis and the residualized phenotypes ----
-	Q := testutil.GramSchmidt(Z)
+	Q := computeQ(t, Z, ntot, dumpDir)
 
 	var QtY, QQtY, Ynew mat.Dense
 	QtY.Mul(Q.T(), Y)
@@ -180,7 +243,6 @@ func TestAssocPlaintextOracle(t *testing.T) {
 	// Debugging aid: dump the intermediate sxx/sxy/syy this oracle computes, not just
 	// the final ratio, so a divergent path's own debug output (sxx.txt, sxy.txt,
 	// syy.txt) can be compared stage by stage instead of only at the end.
-	dumpDir := os.Getenv("SFGWAS_ORACLE_DUMP")
 	var sxxAll []float64
 	sxyAll := make([][]float64, npheno)
 
@@ -243,11 +305,11 @@ func TestAssocPlaintextOracle(t *testing.T) {
 	}
 
 	if dumpDir != "" {
-		writeFloatLine(t, filepath.Join(dumpDir, "oracle_sxx.txt"), sxxAll)
+		writeFloatLine(t, filepath.Join(dumpDir, fmt.Sprintf("oracle_%ssxx.txt", filePrefix)), sxxAll)
 		for i := 0; i < npheno; i++ {
-			writeFloatLine(t, filepath.Join(dumpDir, fmt.Sprintf("oracle_sxy_%d.txt", i)), sxyAll[i])
+			writeFloatLine(t, filepath.Join(dumpDir, fmt.Sprintf("oracle_%ssxy_%d.txt", filePrefix, i)), sxyAll[i])
 		}
-		writeFloatLine(t, filepath.Join(dumpDir, "oracle_syy.txt"), syy)
+		writeFloatLine(t, filepath.Join(dumpDir, fmt.Sprintf("oracle_%ssyy.txt", filePrefix)), syy)
 		t.Logf("dumped oracle intermediates to %s", dumpDir)
 	}
 

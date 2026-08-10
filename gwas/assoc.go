@@ -975,11 +975,15 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 	mpcObj := ast.general.mpcObj[0]
 	dataBits := mpcObj.GetDataBits()
 	fracBits := mpcObj.GetFracBits()
+	debug := ast.general.config.Debug
+	pid := mpcObj.GetPid()
 
 	if !ast.general.config.UseEigenCovOrtho {
-		var Sss mpc_core.RMat
+		var Sss, Lss, LinvSs mpc_core.RMat
+		var revealFracBits int
 		if hiPrec == nil {
-			Sss = mpcObj.CholeskyInvSqrt(ZtZss, scaling)
+			Sss, Lss, LinvSs = mpcObj.CholeskyInvSqrt(ZtZss, scaling)
+			revealFracBits = fracBits
 		} else {
 			// Temporarily run CholeskyInvSqrt (and everything it calls -- SqrtAndSqrtInverse,
 			// TruncVec/TruncMat) at higher precision, then rescale the result back down to
@@ -987,7 +991,8 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 			// pipeline. Scoped to mpcObj[0] only, synchronously, before the per-block parallel
 			// loop starts -- no concurrent goroutine touches this MPC object's precision
 			// fields during the window between save and restore.
-			Sss = func() mpc_core.RMat {
+			revealFracBits = hiPrec.fracBits
+			Sss, Lss, LinvSs = func() (mpc_core.RMat, mpc_core.RMat, mpc_core.RMat) {
 				oldDataBits, oldFracBits := mpcObj.GetDataBits(), mpcObj.GetFracBits()
 				defer func() {
 					mpcObj.SetDataBits(oldDataBits)
@@ -995,10 +1000,22 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 				}()
 				mpcObj.SetDataBits(hiPrec.dataBits)
 				mpcObj.SetFracBits(hiPrec.fracBits)
-				SssHi := mpcObj.CholeskyInvSqrt(hiPrec.ZtZss, hiPrec.scaling)
-				return mpcObj.TruncMat(SssHi, hiPrec.dataBits, hiPrec.fracBits-fracBits)
+				SssHi, LssHi, LinvSsHi := mpcObj.CholeskyInvSqrt(hiPrec.ZtZss, hiPrec.scaling)
+				return mpcObj.TruncMat(SssHi, hiPrec.dataBits, hiPrec.fracBits-fracBits), LssHi, LinvSsHi
 			}()
 		}
+
+		// L and Linv are the un-scaled Cholesky factor of ZtZss and its inverse -- dumped
+		// so they can be diffed directly against testutil.Cholesky's plaintext L/Linv on
+		// the same input, isolating whether a precision issue is fixed-point truncation
+		// here or ZtZ's own conditioning (see CholeskyInvSqrt's doc comment).
+		if debug && pid > 0 {
+			Lr := mpcObj.RevealSymMat(Lss).ToFloat(revealFracBits)
+			LinvR := mpcObj.RevealSymMat(LinvSs).ToFloat(revealFracBits)
+			SaveFloatMatrixToFileRowMajor(ast.general.CachePath("cholesky_L.txt"), Lr)
+			SaveFloatMatrixToFileRowMajor(ast.general.CachePath("cholesky_Linv.txt"), LinvR)
+		}
+
 		Sct := mpcObj.SSToCMat(cryptoParams, Sss)
 		return covOrthoFactor{
 			applySS: func(A mpc_core.RMat) mpc_core.RMat {

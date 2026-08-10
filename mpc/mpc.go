@@ -2661,13 +2661,19 @@ func (mpcObj *MPC) EigenDecomp(A mpc_core.RMat) (V mpc_core.RMat, L mpc_core.RVe
 // only ~n(n+1)/2 truncating multiplications total, with no deflation to compound across.
 // Appropriate for small n (e.g. covariate count): the O(n) sequential dependency chain
 // (each column needs the previous ones) costs one MPC round trip per column.
-func (mpcObj *MPC) CholeskyInvSqrt(A mpc_core.RMat, scaling mpc_core.RElem) mpc_core.RMat {
+//
+// Also returns L and its (unscaled, pre-truncation-of-the-caller's-scaling) inverse
+// L^{-1} — not needed for S itself, but callers debugging precision loss want the
+// factor and its inverse individually, revealed and compared against a plaintext
+// Cholesky decomposition of the same A (see testutil.Cholesky), rather than only the
+// combined, scaled S.
+func (mpcObj *MPC) CholeskyInvSqrt(A mpc_core.RMat, scaling mpc_core.RElem) (S, L, Linv mpc_core.RMat) {
 	rtype := A.Type()
 	n := len(A)
 	dataBits := mpcObj.dataBits
 	fracBits := mpcObj.fracBits
 
-	L := mpc_core.InitRMat(rtype.Zero(), n, n)
+	L = mpc_core.InitRMat(rtype.Zero(), n, n)
 	LinvDiag := mpc_core.InitRVec(rtype.Zero(), n)
 
 	for j := 0; j < n; j++ {
@@ -2701,7 +2707,7 @@ func (mpcObj *MPC) CholeskyInvSqrt(A mpc_core.RMat, scaling mpc_core.RElem) mpc_
 	// Invert L (lower triangular) via forward substitution: for each column j,
 	// Linv[j][j] = 1/L[j][j] (already have it), and for i>j,
 	// Linv[i][j] = -(sum_{k=j}^{i-1} L[i][k]*Linv[k][j]) / L[i][i].
-	Linv := mpc_core.InitRMat(rtype.Zero(), n, n)
+	Linv = mpc_core.InitRMat(rtype.Zero(), n, n)
 	for j := 0; j < n; j++ {
 		Linv[j][j] = LinvDiag[j].Copy()
 		for i := j + 1; i < n; i++ {
@@ -2722,9 +2728,12 @@ func (mpcObj *MPC) CholeskyInvSqrt(A mpc_core.RMat, scaling mpc_core.RElem) mpc_
 		}
 	}
 
-	Linv.MulScalar(scaling)
-	Linv = mpcObj.TruncMat(Linv, dataBits, fracBits)
-	return Linv
+	// S is scaling * L^{-1}, computed from a copy so the returned Linv stays the plain
+	// (unscaled) inverse -- MulScalar mutates in place and would otherwise clobber it.
+	S = Linv.Copy()
+	S.MulScalar(scaling)
+	S = mpcObj.TruncMat(S, dataBits, fracBits)
+	return S, L, Linv
 }
 
 /* PARALLEL ROUTINES*/
