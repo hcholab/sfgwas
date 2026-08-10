@@ -377,6 +377,14 @@ func runAssocPlaintextOracle(t *testing.T, filePrefix string, computeQ func(t *t
 		gwas.SaveFloatMatrixToFileRowMajor(filepath.Join(dumpDir, fmt.Sprintf("oracle_%sqtx.txt", filePrefix)), qtxAll)
 		writeFloatLine(t, filepath.Join(dumpDir, fmt.Sprintf("oracle_%sxtxdiag.txt", filePrefix)), xtxAll)
 
+		// gotR is the final statistic this oracle computes, in the same one-value-per-line
+		// %.6e format gwas.go's Phase3 uses for out/party*/assoc_%d.txt (via the same
+		// gwas.SaveFloatVectorToFile helper) -- diff these directly against assoc_%d.txt
+		// rather than only seeing the aggregate max/mean this test already logs.
+		for i := 0; i < npheno; i++ {
+			gwas.SaveFloatVectorToFile(filepath.Join(dumpDir, fmt.Sprintf("oracle_%sassoc_%d.txt", filePrefix, i)), gotR[i])
+		}
+
 		t.Logf("dumped oracle intermediates to %s", dumpDir)
 	}
 
