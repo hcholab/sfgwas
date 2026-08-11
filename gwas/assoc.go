@@ -1073,6 +1073,16 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 				}
 
 				Adec := mpcObj.Network.CollectiveDecryptMat(cryptoParams, A, 1)
+				Sdec := mpcObj.Network.CollectiveDecryptMat(cryptoParams, Sct, 1)
+
+				Sfloat := make([][]float64, len(Sdec))
+				for i := range Sdec {
+					row := make([]float64, 0, len(Sdec[i])*cryptoParams.GetSlots())
+					for j := range Sdec[i] {
+						row = append(row, crypto.DecodeFloatVector(cryptoParams, crypto.PlainVector{Sdec[i][j]})...)
+					}
+					Sfloat[i] = row
+				}
 
 				Afloat := make([][]float64, len(Adec))
 				for i := range Adec {
