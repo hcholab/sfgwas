@@ -1101,10 +1101,7 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 					outFloat[i] = append([]float64(nil), out.RawRowView(i)...)
 				}
 
-				var Aenc crypto.CipherMatrix
-				if pid == 1 {
-					Aenc, _, _, _ = crypto.EncryptFloatMatrixRow(cryptoParams, outFloat)
-				}
+				Aenc, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, outFloat)
 				Aenc = mpcObj.Network.BroadcastCMat(cryptoParams, Aenc, 1, len(Aenc), len(Aenc[0]))
 				return Aenc
 			},
