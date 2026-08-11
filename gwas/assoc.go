@@ -950,6 +950,12 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
 type covOrthoFactor struct {
 	applySS func(mpc_core.RMat) mpc_core.RMat
 	applyCT func(crypto.CipherMatrix) crypto.CipherMatrix
+
+	// applyCTAdditive is applyCT's counterpart for callers that hold their own
+	// additive share of the target matrix in plaintext (e.g. GenoBlockMultPlain's
+	// per-party local product) instead of an already-aggregated ciphertext, so it
+	// encrypts internally rather than taking a CipherMatrix.
+	applyCTAdditive func([][]float64) crypto.CipherMatrix
 }
 
 // covOrthoHighPrec optionally carries a higher-fracBits representation of ZtZss/scaling,
@@ -1096,7 +1102,10 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 
 				Smat := mat.NewDense(len(Sfloat), len(Sfloat[0]), nil)
 				for i := range Sfloat {
-					Smat.SetRow(i, Sfloat[i])
+					// Smat.SetRow(i, Sfloat[i])
+					for j := 0; j <= i; j++ {
+						Smat.Set(i, j, Sfloat[i][j])
+					}
 				}
 
 				Aflat := mat.NewDense(len(Afloat), len(Afloat[0]), nil)
@@ -1115,6 +1124,35 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 				Aenc, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, outFloat)
 				Aenc = mpcObj.Network.BroadcastCMat(cryptoParams, Aenc, 1, len(Aenc), len(Aenc[0]))
 				return Aenc
+			},
+			applyCTAdditive: func(APlain [][]float64) crypto.CipherMatrix {
+				// S (Sct) is ncov-by-ncov lower-triangular (S = scaling * L^{-1}, and the
+				// inverse of a lower-triangular L is lower-triangular), so row i of S*A only
+				// depends on rows 0..i of A. Encrypt A's covariate rows once, then for each
+				// output row i, restrict both operands to the nonzero prefix: a 1-row slice
+				// of S and A's first i+1 encrypted rows. This is CMultMatRowTimesRow's usual
+				// contract (N i-by-k, M k-by-m) with N and M's shared/k dimension cut down
+				// from ncov to i+1, which is exactly where that function's cost comes from
+				// (masking+replicating one element of N per row of M).
+				Aenc, _, _, err := crypto.EncryptFloatMatrixRow(cryptoParams, APlain[:ncov])
+				if err != nil {
+					panic(err)
+				}
+
+				result := make(crypto.CipherMatrix, ncov)
+				for i := 0; i < ncov; i++ {
+					Si := crypto.CipherMatrix{Sct[i]}
+					out := CMultMatRowTimesRow(cryptoParams, Si, Aenc[:i+1], numThreads)
+					result[i] = out[0]
+				}
+
+				// APlain is this party's own additive share of the target matrix, not the
+				// value itself, so S*APlain is only this party's share of S*A. S*(Ξ£β‚šAβ‚š) =
+				// Ξ£β‚š(S*Aβ‚š) by linearity, so summing every party's local S*APlain across the
+				// network reconstructs the same S*A that applyCT computes from an
+				// already-aggregated input -- just with the aggregation moved after the
+				// (now cheaper, triangular) multiply instead of before it.
+				return mpcObj.Network.AggregateCMat(cryptoParams, result)
 			},
 		}
 	}
@@ -1156,6 +1194,22 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 				B[i] = crypto.CMultScalar(cryptoParams, B[i], LsqrtInv[i])
 			}
 			return B
+		},
+		applyCTAdditive: func(APlain [][]float64) crypto.CipherMatrix {
+			// Unlike Cholesky's S, V isn't triangular, so there's no nonzero-prefix
+			// shortcut here -- just encrypt and reuse applyCT's full product.
+			Aenc, _, _, err := crypto.EncryptFloatMatrixRow(cryptoParams, APlain[:ncov])
+			if err != nil {
+				panic(err)
+			}
+			B := CMultMatRowTimesRow(cryptoParams, Vt, Aenc, numThreads)
+			for i := range B {
+				B[i] = crypto.CMultScalar(cryptoParams, B[i], LsqrtInv[i])
+			}
+			// APlain is this party's local additive share; sum every party's local B
+			// across the network to reconstruct the true S*A (see the Cholesky branch's
+			// applyCTAdditive for why this is valid).
+			return mpcObj.Network.AggregateCMat(cryptoParams, B)
 		},
 	}
 }
@@ -1416,7 +1470,8 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 				}
 
 				// Compute B = QᵀX = S * (ZᵀX)/sqrt(n)
-				B := covOrtho.applyCT(ZtXscaled)
+				// B := covOrtho.applyCT(ZtXscaled)
+				B := covOrtho.applyCTAdditive(matOut)
 
 				if debug {
 					ztxBlocks[b] = ZtXscaled
