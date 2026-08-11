@@ -1034,8 +1034,9 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 		log.LLvl1("## DEBUG Replacing Sss with plaintext matrices for testing ##")
 		rtype := mpcObj.GetRType()
 		Sss = mpc_core.InitRMat(rtype.Zero(), len(ZtZss), len(ZtZss))
+		var Sfloat [][]float64
 		if pid > 0 {
-			Sfloat := LoadMatrixFromFileFloat(ast.general.CachePath("cholesky_S_truth.txt"), ',')
+			Sfloat = LoadMatrixFromFileFloat(ast.general.CachePath("cholesky_S_truth.txt"), ',')
 			log.LLvl1("## DEBUG", len(Sfloat), "rows, ", len(Sfloat[0]), "cols")
 
 			for i := range Sss {
@@ -1067,7 +1068,41 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 				return mpcObj.TruncMat(R, dataBits, fracBits)
 			},
 			applyCT: func(A crypto.CipherMatrix) crypto.CipherMatrix {
-				return CMultMatRowTimesRow(cryptoParams, Sct, A, numThreads)
+				if pid == 0 {
+					return A
+				}
+
+				Adec := mpcObj.Network.CollectiveDecryptMat(cryptoParams, A, 1)
+
+				Afloat := make([][]float64, len(Adec))
+				for i := range Adec {
+					row := make([]float64, 0, len(Adec[i])*cryptoParams.GetSlots())
+					for j := range Adec[i] {
+						row = append(row, crypto.DecodeFloatVector(cryptoParams, crypto.PlainVector{Adec[i][j]})...)
+					}
+					Afloat[i] = row
+				}
+
+				Smat := mat.NewDense(len(Sfloat), len(Sfloat[0]), nil)
+				for i := range Sfloat {
+					Smat.SetRow(i, Sfloat[i])
+				}
+
+				Aflat := mat.NewDense(len(Afloat), len(Afloat[0]), nil)
+				for i := range Afloat {
+					Aflat.SetRow(i, Afloat[i])
+				}
+
+				out := mat.NewDense(len(Sfloat), len(Afloat[0]), nil)
+				out.Mul(Smat, Aflat)
+
+				outFloat := make([][]float64, len(Sfloat))
+				for i := range outFloat {
+					outFloat[i] = append([]float64(nil), out.RawRowView(i)...)
+				}
+
+				Aenc, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, outFloat)
+				return Aenc
 			},
 		}
 	}
