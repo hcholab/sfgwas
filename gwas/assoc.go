@@ -1031,25 +1031,25 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 		}
 
 		// ###### DEBUG ######
-		log.LLvl1("## DEBUG Replacing Sss with plaintext matrices for testing ##")
-		rtype := mpcObj.GetRType()
-		Sss = mpc_core.InitRMat(rtype.Zero(), len(ZtZss), len(ZtZss))
-		var Sfloat [][]float64
-		if pid > 0 {
-			Sfloat = LoadMatrixFromFileFloat(ast.general.CachePath("cholesky_S_truth.txt"), ',')
-			log.LLvl1("## DEBUG", len(Sfloat), "rows, ", len(Sfloat[0]), "cols")
+		// log.LLvl1("## DEBUG Replacing Sss with plaintext matrices for testing ##")
+		// rtype := mpcObj.GetRType()
+		// Sss = mpc_core.InitRMat(rtype.Zero(), len(ZtZss), len(ZtZss))
+		// var Sfloat [][]float64
+		// if pid > 0 {
+		// 	Sfloat = LoadMatrixFromFileFloat(ast.general.CachePath("cholesky_S_truth.txt"), ',')
+		// 	log.LLvl1("## DEBUG", len(Sfloat), "rows, ", len(Sfloat[0]), "cols")
 
-			for i := range Sss {
-				for j := range Sss[i] {
-					if pid == 1 {
-						Sss[i][j] = rtype.FromFloat64(Sfloat[i][j], fracBits)
-					} else {
-						Sss[i][j] = rtype.Zero().Copy()
-					}
-				}
-				log.LLvl1("## DEBUG Sfloat", Sfloat[i][:5])
-			}
-		}
+		// 	for i := range Sss {
+		// 		for j := range Sss[i] {
+		// 			if pid == 1 {
+		// 				Sss[i][j] = rtype.FromFloat64(Sfloat[i][j], fracBits)
+		// 			} else {
+		// 				Sss[i][j] = rtype.Zero().Copy()
+		// 			}
+		// 		}
+		// 		log.LLvl1("## DEBUG Sfloat", Sfloat[i][:5])
+		// 	}
+		// }
 		// ###################
 
 		Sct := mpcObj.SSToCMat(cryptoParams, Sss)
