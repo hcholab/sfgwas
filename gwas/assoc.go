@@ -985,6 +985,7 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 	fracBits := mpcObj.GetFracBits()
 	debug := ast.general.config.Debug
 	pid := mpcObj.GetPid()
+	ncov := len(ZtZss)
 
 	if !ast.general.config.UseEigenCovOrtho {
 		var Sss, Lss, LinvSs mpc_core.RMat
@@ -1081,7 +1082,7 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 					for j := range Sdec[i] {
 						row = append(row, crypto.DecodeFloatVector(cryptoParams, crypto.PlainVector{Sdec[i][j]})...)
 					}
-					Sfloat[i] = row
+					Sfloat[i] = row[:ncov]
 				}
 
 				Afloat := make([][]float64, len(Adec))
@@ -1120,7 +1121,6 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 
 	rtype := mpcObj.GetRType()
 	useBoolean := mpcObj.GetBooleanShareFlag()
-	ncov := len(ZtZss)
 
 	Vtss, Lss := mpcObj.EigenDecomp(ZtZss)
 	_, LsqrtInvss := mpcObj.SqrtAndSqrtInverse(Lss, useBoolean)
