@@ -1040,6 +1040,13 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 			SaveMatrixToFile(cryptoParams, mpcObj, Sct, len(Sss), -1, ast.general.CachePath("cholesky_Sct.txt"))
 		}
 
+		// ###### DEBUG ######
+		log.LLvl1("## DEBUG Replacing Sss and Sct with plaintext matrices for testing ##")
+		Sfloat := LoadMatrixFromFileFloat(ast.general.CachePath("cholesky_S_truth.txt"), ',')
+		Sct, _, _, _ = crypto.EncryptFloatMatrixRow(cryptoParams, Sfloat)
+		Sss = mpcObj.CMatToSS(cryptoParams, mpcObj.GetRType(), Sct, 1, len(Sct), len(Sct[0]), len(Sss[0]))
+		// ###################
+
 		return covOrthoFactor{
 			applySS: func(A mpc_core.RMat) mpc_core.RMat {
 				R := mpcObj.SSMultMat(Sss, A)
