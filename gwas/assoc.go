@@ -271,7 +271,15 @@ func (ast *AssocTestPlainMult) GenoBlockMultPlain(b int, mat *mat.Dense) (matOut
 		if isPgen {
 
 			numInd := gwasParams.numFiltInds[pid]
-			snpFilt := gwasParams.snpFilt[shift : shift+uint64(blockSize)]
+			var snpFilt []bool
+			if gwasParams.snpFilt == nil {
+				snpFilt = make([]bool, blockSize)
+				for i := range snpFilt {
+					snpFilt[i] = true
+				}
+			} else {
+				snpFilt = gwasParams.snpFilt[shift : shift+uint64(blockSize)]
+			}
 
 			pgenFile := fmt.Sprintf(ast.general.config.GenoFilePrefix, b+1) // Geno file for chromosome b+1
 

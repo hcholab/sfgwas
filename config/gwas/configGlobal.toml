@@ -17,9 +17,9 @@ div_sqrt_max_len = 1000000
 mpc_boolean_shares = true
 
 ## Data dimensions
-num_inds = [0, 1000, 1000]
-num_snps = 100000
-num_covs = 5
+num_inds = [0, 11428, 11428]
+num_snps = 10000
+num_covs = 2
 cov_all_ones = false
 
 ## Input file options (supports "blocks" or "pgen")
@@ -27,8 +27,8 @@ geno_file_format = "pgen"
 use_precomputed_geno_count = true
 
 ## Quality control parameters
-use_cached_qc = true
-skip_qc = false
+use_cached_qc = false
+skip_qc = true
 imiss_ub = 1.0          # Unused if "pgen"
 het_lb = 0.0            # Unused if "pgen"
 het_ub = 0.1            # Unused if "pgen"
@@ -41,16 +41,16 @@ snp_dist_thres = 100000
 use_cached_pca = true
 use_cached_power_iter = false
 power_iter_cache_interval = 2    # checkpoint every Nth power iteration; <= 1 means every one
-skip_pca = false
+skip_pca = true
 iter_per_eigenval = 5
-num_pcs_to_remove = 5
+num_pcs_to_remove = 10
 num_oversampling = 10
 num_power_iters = 20
 
 ## Assoc test parameters
 use_cached_combined_q = false
 pgen_batch_nsnp = 8192
-blocks_for_assoc_test = [0]
+blocks_for_assoc_test = []
 
 # Project out covariates/PCs lazily via (Z'Z)^-1 instead of a joint QR on the
 # genotype matrix. Mathematically equivalent, substantially faster.

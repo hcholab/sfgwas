@@ -160,7 +160,7 @@ func getProtocol() string {
 	case "gwas", "pca":
 		return proto
 	case "":
-		return "pca"
+		return "gwas"
 	default:
 		panic("Unknown PROTOCOL: " + proto)
 	}
