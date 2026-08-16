@@ -1254,26 +1254,20 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	Zt := ast.covPc
 	Yt := ast.pheno
 
+	mu := make()  // Secret-shared mean of covariates (for lazy mean-centering)
 	if !covAllOnes {
-		log.LLvl1("Adding an all-ones covariate")
+		log.LLvl1("Computing covariate means for lazy mean-centering (no explicit all-ones covariate added)")
 
-		_, cols := Zt.Dims()
-
-		ones := mat.NewDense(1, cols, nil)
+		z1Local := mat.NewDense(ncov, 1, nil)
 		if pid > 0 {
-			// Party 0 holds no share of the data; its Zt is a dummy placeholder and must
-			// stay all-zero so that it contributes nothing to the shared Zt*Z below.
-			for i := 0; i < cols; i++ {
-				ones.Set(0, i, 1)
+			for i := 0; i < ncov; i++ {
+				z1Local.Set(i, 0, floats.Sum(Zt.RawRowView(i)))
 			}
 		}
+		z1Total := mpc.DenseToRMat(rtype, z1Local, fracBits)
 
-		covWithIntercept := mat.NewDense(ncov+1, cols, nil)
-		covWithIntercept.Stack(ones, Zt)
-
-		Zt = covWithIntercept
-		ncov += 1
-		covAllOnes = true
+		// TODO: Multiply z1Total by fixed-point encoding of (1 / float64(nrowsTotal)) to obtain secret shared mu
+		mu = mpcObj.Network.AggregateRMat(z1Total) * (1 / float64(nrowsTotal))
 	} else {
 		log.LLvl1("Warning: assumes the first covariate is all ones (if not, reorder input)")
 	}
@@ -1322,7 +1316,9 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		SaveFloatMatrixToFileRowMajor(ast.general.CachePath("ZtZ.txt"), ZtZr)
 	}
 
-	covOrtho := ast.computeCovOrthoFactor(cryptoParams, ZtZss, scaling, hiPrec, numThreads)
+	// Mean-center ZtZ for real here
+	ZtZcss := ZtZss - nrowsTotal*mpcObj.SSMultMat(mu, mu.T())
+	covOrtho := ast.computeCovOrthoFactor(cryptoParams, ZtZcss, scaling, hiPrec, numThreads)
 
 	ZtZss = nil
 
@@ -1333,55 +1329,42 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	var nsnps, numCtx int
 	var outFilter []bool
 
-	var ZtY1ss mpc_core.RMat
+	var ZtYss mpc_core.RMat
 	if pid > 0 {
-		// Build [Yt; 1]
-		Yt1 := mat.NewDense(npheno+1, nrowsAll[pid], nil)
-
-		_, cols := Yt.Dims()
-
-		ones := mat.NewDense(1, cols, nil)
-		for i := 0; i < cols; i++ {
-			ones.Set(0, i, 1)
+		var ZtY mat.Dense
+		ZtY.Mul(Zt, Yt.T())
+		Ysum := make([]float64, npheno)
+		for i := 0; i < npheno; i++ {
+			Ysum[i] = floats.Sum(Yt.RawRowView(i))
 		}
-
-		Yt1.Stack(Yt, ones)
-
-		var ZtY1 mat.Dense
-		ZtY1.Mul(Zt, Yt1.T())
-		ZtY1.Scale(nrowsTotalInvSqrt, &ZtY1) // scaling by 1/sqrt(n)
-		ZtY1ss = mpc.DenseToRMat(rtype, &ZtY1, fracBits)
+		Ysumss := mpc.DenseToRVec(rtype, Ysum, fracBits)
+		muYsumss := mpcObj.SSMultVec(mu, Ysumss)
+		// Not sure if scaling is needed anymore
+		// ZtY.Scale(nrowsTotalInvSqrt, &ZtY) // scaling by 1/sqrt(n)
+		ZtYss = mpc.DenseToRMat(rtype, &ZtY, fracBits)
 	} else {
-		ZtY1ss = mpc_core.InitRMat(rtype.Zero(), ncov, npheno+1)
+		ZtYss = mpc_core.InitRMat(rtype.Zero(), ncov, npheno)
 	}
 
-	QtY1ss := covOrtho.applySS(ZtY1ss)
+	QtYss := covOrtho.applySS(ZtYss)
+	// Lazy mean centering
+	centering := covOrtho.applySS(muYsumss)
+	QtYss -= centering
+
+	// Add top row (as if the intercept covariate were present)
+	topRow := Ysum * nrowsTotalInvSqrt
+	QtYss = append([]mpc_core.RVec{topRow}, QtYss...)
 
 	// QtY1 = Qᵀ[Y;1] is the covariate projection applied to phenotypes+intercept -- the
 	// same S-application step as the per-block QtX (qtx.txt) below, but computed once,
 	// so it's cheap to dump and a useful earlier checkpoint: if this already diverges,
 	// the bug is in S/applySS itself, not in anything specific to genotype blocks.
 	if debug && pid > 0 {
-		QtY1r := mpcObj.RevealSymMat(QtY1ss).ToFloat(fracBits)
-		SaveFloatMatrixToFileRowMajor(ast.general.CachePath("QtY1.txt"), QtY1r)
+		QtYr := mpcObj.RevealSymMat(QtYss).ToFloat(fracBits)
+		SaveFloatMatrixToFileRowMajor(ast.general.CachePath("QtY.txt"), QtYr)
 	}
 
-	// Split into QtY and Qt1
-	YtQss := mpc_core.InitRMat(rtype.Zero(), npheno, ncov)
-	OnetQss := mpc_core.InitRVec(rtype.Zero(), ncov)
-	if pid > 0 {
-		for i := 0; i < ncov; i++ {
-			for j := 0; j < npheno; j++ {
-				YtQss[j][i] = QtY1ss[i][j].Copy()
-			}
-			OnetQss[i] = QtY1ss[i][npheno].Copy()
-		}
-	}
-	QtY1ss = nil
-
-	OnetQ := mpcObj.SSToCVec(cryptoParams, OnetQss)
 	YtQ := mpcObj.SSToCMat(cryptoParams, YtQss)
-	OnetQss, YtQss = nil, nil
 
 	if pid == 0 { // TODO: Check consistency with pid > 0 branch
 		numCtx = mpcObj.Network.ReceiveInt(mpcObj.GetHubPid())
@@ -1442,12 +1425,13 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 
 				log.LLvl1(time.Now().Format(time.RFC3339), "block", b+1, "/", numBlocks, "computed genotype matrix mult")
 
-				// Scale ZtX by 1/sqrt(n) to account for scaling in covariate correction
-				for i := 0; i < ncov; i++ {
-					for j := range matOut[i] {
-						matOut[i][j] *= nrowsTotalInvSqrt
-					}
-				}
+				// No need for scaling anymore
+				// // Scale ZtX by 1/sqrt(n) to account for scaling in covariate correction
+				// for i := 0; i < ncov; i++ {
+				// 	for j := range matOut[i] {
+				// 		matOut[i][j] *= nrowsTotalInvSqrt
+				// 	}
+				// }
 
 				matOutEnc, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, matOut)
 				matOutEnc = mpcObj.Network.AggregateCMat(cryptoParams, matOutEnc)
@@ -1472,6 +1456,16 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 				// Compute B = QᵀX = S * (ZᵀX)/sqrt(n)
 				// B := covOrtho.applyCT(ZtXscaled)
 				B := covOrtho.applyCTAdditive(matOut)
+				// Lazy mean centering
+				Xsumss := mpc.DenseToRVec(rtype, dosageSum, fracBits)
+				muXsumss := mpcObj.SSMultVec(mu, Xsumss)
+				centering := covOrtho.applySS(muXsumss)
+				centeringCt := mpcObj.SStoCiphertext(cryptoParams, centering)
+				B -= centeringCt
+
+				// Add top row (as if the intercept covariate were present)
+				topRow := crypto.CMultScalar(cryptoParams, OnetX, nrowsTotalInvSqrt)
+				B = append([]crypto.CipherVector{topRow}, B...)
 
 				if debug {
 					ztxBlocks[b] = ZtXscaled
