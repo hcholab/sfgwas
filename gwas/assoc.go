@@ -1229,6 +1229,7 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	mpcObj := mpcPar[0]
 	fracBits := mpcObj.GetFracBits()
 	rtype := mpcObj.GetRType()
+	dataBits := mpcObj.GetDataBits()
 
 	gwasParams := ast.general.gwasParams
 	numBlocks := ast.general.config.GenoNumBlocks
@@ -1254,20 +1255,22 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	Zt := ast.covPc
 	Yt := ast.pheno
 
-	mu := make()  // Secret-shared mean of covariates (for lazy mean-centering)
+	// Secret-shared mean of covariates (ncov-by-1), used for lazy mean-centering when no
+	// explicit all-ones covariate is present. Each party's local column sum, already divided
+	// by the (public) total sample count before fixed-point encoding, is directly a valid
+	// additive share of the true global mean -- no MPC truncation required, since the division
+	// happens in plaintext, unlike a post-hoc SS multiply by a fractional constant.
+	var mu mpc_core.RMat
 	if !covAllOnes {
 		log.LLvl1("Computing covariate means for lazy mean-centering (no explicit all-ones covariate added)")
 
 		z1Local := mat.NewDense(ncov, 1, nil)
 		if pid > 0 {
 			for i := 0; i < ncov; i++ {
-				z1Local.Set(i, 0, floats.Sum(Zt.RawRowView(i)))
+				z1Local.Set(i, 0, floats.Sum(Zt.RawRowView(i)) * nrowsTotalInv)
 			}
 		}
-		z1Total := mpc.DenseToRMat(rtype, z1Local, fracBits)
-
-		// TODO: Multiply z1Total by fixed-point encoding of (1 / float64(nrowsTotal)) to obtain secret shared mu
-		mu = mpcObj.Network.AggregateRMat(z1Total) * (1 / float64(nrowsTotal))
+		mu = mpc.DenseToRMat(rtype, z1Local, fracBits)
 	} else {
 		log.LLvl1("Warning: assumes the first covariate is all ones (if not, reorder input)")
 	}
@@ -1316,11 +1319,43 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		SaveFloatMatrixToFileRowMajor(ast.general.CachePath("ZtZ.txt"), ZtZr)
 	}
 
-	// Mean-center ZtZ for real here
-	ZtZcss := ZtZss - nrowsTotal*mpcObj.SSMultMat(mu, mu.T())
+	// Mean-center ZtZ: Z0tZ0 = ZtZ - n*mu*muT (see derivation notes). ZtZss already carries the
+	// 1/sqrt(n) scaling from the SymOuterK call above, so the correction term needs the matching
+	// sqrt(n) factor (n/sqrt(n)) rather than a bare n.
+	ZtZcss := ZtZss
+	if !covAllOnes {
+		muOuter := mpcObj.SSMultMat(mu, mu.Transpose())
+		muOuter = mpcObj.TruncMat(muOuter, dataBits, fracBits)
+		muOuter.MulScalar(rtype.FromFloat64(math.Sqrt(float64(nrowsTotal)), fracBits))
+		muOuter = mpcObj.TruncMat(muOuter, dataBits, fracBits)
+
+		ZtZcss = ZtZss.Copy()
+		ZtZcss.Sub(muOuter)
+	}
 	covOrtho := ast.computeCovOrthoFactor(cryptoParams, ZtZcss, scaling, hiPrec, numThreads)
 
 	ZtZss = nil
+
+	// Smu = S*mu, computed once here (for all parties, including party 0) so the per-block
+	// mean-centering of B below never has to touch the interactive SSMultMat/TruncMat
+	// protocol -- party 0 never enters that per-block loop (see the pid==0 branch below),
+	// so any Beaver-style secret-shared multiply placed inside it would deadlock: party 0
+	// would never show up to distribute its side of the masking/randomness those protocols
+	// require (see TruncMat's and BeaverReconstructMat's own pid==0 branches), while parties
+	// 1/2 block forever waiting for it. One ciphertext per covariate, each holding its scalar
+	// replicated across all slots, mirrors how computeCovOrthoFactor turns LsqrtInv into
+	// per-block-safe ciphertexts for the same reason.
+	var SmuCT crypto.CipherVector
+	if !covAllOnes {
+		Smu := covOrtho.applySS(mu)
+		SmuCT = crypto.CZeros(cryptoParams, ncov)
+		for i := range SmuCT {
+			SmuCT[i] = mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{Smu[i][0]})
+			if pid > 0 { // no share on party 0; SStoCiphertext left it nil
+				SmuCT[i] = crypto.InnerSumAll(cryptoParams, crypto.CipherVector{SmuCT[i]})
+			}
+		}
+	}
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Calculating inverse of covariate covariance matrix: finished")
 
@@ -1329,41 +1364,56 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	var nsnps, numCtx int
 	var outFilter []bool
 
+	// ZtY is scaled by 1/sqrt(n) to match ZtZss's pre-existing scaling (required for
+	// QtY = S*ZtY/sqrt(n) to be a properly normalized projection, QᵀQ = I -- see comment above
+	// computeCovOrthoFactor's "scaling" factor). When !covAllOnes, Ysum gets the same 1/sqrt(n)
+	// factor, since it feeds the muYsum centering term below.
 	var ZtYss mpc_core.RMat
+	var YsumMatss mpc_core.RMat // 1-by-npheno; unused when covAllOnes
 	if pid > 0 {
 		var ZtY mat.Dense
 		ZtY.Mul(Zt, Yt.T())
-		Ysum := make([]float64, npheno)
-		for i := 0; i < npheno; i++ {
-			Ysum[i] = floats.Sum(Yt.RawRowView(i))
-		}
-		Ysumss := mpc.DenseToRVec(rtype, Ysum, fracBits)
-		muYsumss := mpcObj.SSMultVec(mu, Ysumss)
-		// Not sure if scaling is needed anymore
-		// ZtY.Scale(nrowsTotalInvSqrt, &ZtY) // scaling by 1/sqrt(n)
+		ZtY.Scale(nrowsTotalInvSqrt, &ZtY)
 		ZtYss = mpc.DenseToRMat(rtype, &ZtY, fracBits)
+
+		if !covAllOnes {
+			Ysum := mat.NewDense(1, npheno, nil)
+			for i := 0; i < npheno; i++ {
+				Ysum.Set(0, i, floats.Sum(Yt.RawRowView(i)) * nrowsTotalInvSqrt)
+			}
+			YsumMatss = mpc.DenseToRMat(rtype, Ysum, fracBits)
+		}
 	} else {
 		ZtYss = mpc_core.InitRMat(rtype.Zero(), ncov, npheno)
+		if !covAllOnes {
+			YsumMatss = mpc_core.InitRMat(rtype.Zero(), 1, npheno)
+		}
 	}
 
 	QtYss := covOrtho.applySS(ZtYss)
-	// Lazy mean centering
-	centering := covOrtho.applySS(muYsumss)
-	QtYss -= centering
+	if !covAllOnes {
+		// Lazy mean centering: QtY is the projection against the uncentered covariates;
+		// subtract S*mu*Ysum/sqrt(n) to land on the centered ones. QtY stays ncov-by-npheno
+		// throughout -- unlike the covAllOnes path, there is no extra row for the intercept,
+		// since Q here is built purely from centered covariates and never spans it (see the
+		// sx/sy comments below for why that's fine).
+		muYsumss := mpcObj.SSMultMat(mu, YsumMatss)
+		muYsumss = mpcObj.TruncMat(muYsumss, dataBits, fracBits)
+		centering := covOrtho.applySS(muYsumss)
+		QtYss.Sub(centering)
+	}
 
-	// Add top row (as if the intercept covariate were present)
-	topRow := Ysum * nrowsTotalInvSqrt
-	QtYss = append([]mpc_core.RVec{topRow}, QtYss...)
-
-	// QtY1 = Qᵀ[Y;1] is the covariate projection applied to phenotypes+intercept -- the
-	// same S-application step as the per-block QtX (qtx.txt) below, but computed once,
-	// so it's cheap to dump and a useful earlier checkpoint: if this already diverges,
-	// the bug is in S/applySS itself, not in anything specific to genotype blocks.
+	// QtY = QᵀY is the covariate projection applied to phenotypes -- the same S-application
+	// step as the per-block QtX (qtx.txt) below, but computed once, so it's cheap to dump and
+	// a useful earlier checkpoint:
+	// if this already diverges, the bug is in S/applySS itself, not in anything specific to
+	// genotype blocks.
 	if debug && pid > 0 {
 		QtYr := mpcObj.RevealSymMat(QtYss).ToFloat(fracBits)
 		SaveFloatMatrixToFileRowMajor(ast.general.CachePath("QtY.txt"), QtYr)
 	}
 
+	YtQss := QtYss.Transpose()
 	YtQ := mpcObj.SSToCMat(cryptoParams, YtQss)
 
 	if pid == 0 { // TODO: Check consistency with pid > 0 branch
@@ -1425,14 +1475,6 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 
 				log.LLvl1(time.Now().Format(time.RFC3339), "block", b+1, "/", numBlocks, "computed genotype matrix mult")
 
-				// No need for scaling anymore
-				// // Scale ZtX by 1/sqrt(n) to account for scaling in covariate correction
-				// for i := 0; i < ncov; i++ {
-				// 	for j := range matOut[i] {
-				// 		matOut[i][j] *= nrowsTotalInvSqrt
-				// 	}
-				// }
-
 				matOutEnc, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, matOut)
 				matOutEnc = mpcObj.Network.AggregateCMat(cryptoParams, matOutEnc)
 
@@ -1453,32 +1495,38 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 					xtxBlocks[b] = crypto.CipherMatrix{crypto.CopyEncryptedVector(OnetXsq)}
 				}
 
-				// Compute B = QᵀX = S * (ZᵀX)/sqrt(n)
-				// B := covOrtho.applyCT(ZtXscaled)
+				// Compute B = QᵀX = S * (ZᵀX - mu*Xsum) / sqrt(n)
 				B := covOrtho.applyCTAdditive(matOut)
-				// Lazy mean centering
-				Xsumss := mpc.DenseToRVec(rtype, dosageSum, fracBits)
-				muXsumss := mpcObj.SSMultVec(mu, Xsumss)
-				centering := covOrtho.applySS(muXsumss)
-				centeringCt := mpcObj.SStoCiphertext(cryptoParams, centering)
-				B -= centeringCt
 
-				// Add top row (as if the intercept covariate were present)
-				topRow := crypto.CMultScalar(cryptoParams, OnetX, nrowsTotalInvSqrt)
-				B = append([]crypto.CipherVector{topRow}, B...)
+				if !covAllOnes {
+					// Lazy mean centering: subtract Smu*(1ᵀX) from B. Pure ciphertext ops --
+					// no Beaver protocol here, see SmuCT's construction above for why.
+					for i := range B {
+						B[i] = crypto.CSub(cryptoParams, B[i], crypto.CMultScalar(cryptoParams, OnetX, SmuCT[i]))
+					}
+				}
+
+				// Scale by 1/sqrt(n) to match ZtZss's pre-existing scaling (see QtY above).
+				// Applied once here (rather than pre-scaling matOut/dosageSum) since it
+				// distributes the same way over the subtraction above.
+				B = crypto.CMultConstMat(cryptoParams, B, nrowsTotalInvSqrt, true)
 
 				if debug {
 					ztxBlocks[b] = ZtXscaled
 					qtxBlocks[b] = B
 				}
 
-				// Compute sx = 1ᵀ(I - QQᵀ)X
+				// Compute sx = 1ᵀ(I - QQᵀ)X = 1ᵀX - (1ᵀQ)(QᵀX)
 				if covAllOnes {
+					// The supplied covariates already include an explicit all-ones row, so 1
+					// lies entirely within Q's span and (I - QQᵀ) annihilates it.
 					sxBlocks[b] = crypto.CipherMatrix{crypto.CZeros(cryptoParams, numCtx)}
 					log.LLvl1(time.Now().Format(time.RFC3339), "sx set to zero")
 				} else {
-					tmp := CMultMatRowTimesRow(cryptoParams, crypto.CipherMatrix{OnetQ}, B, numThreads)
-					sxBlocks[b] = crypto.CipherMatrix{crypto.CSub(cryptoParams, OnetX, tmp[0])}
+					// Q here is built purely from mean-centered covariates (1ᵀZ0 = 0 exactly),
+					// so 1ᵀQ = 0 identically -- the (1ᵀQ)(QᵀX) term is always exactly zero, and
+					// sx is just the raw dosage sum.
+					sxBlocks[b] = crypto.CipherMatrix{OnetX}
 				}
 
 				// Compute sxy = Yᵀ(I - QQᵀ)X
@@ -1559,23 +1607,25 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 
 		// Compute sy = 1ᵀY - (1ᵀQ)(QᵀY)
 		if covAllOnes {
+			// See the matching sx branch above: 1 is already in Q's span, so this is
+			// exactly zero.
 			sy = make(crypto.CipherMatrix, npheno)
 			for i := 0; i < npheno; i++ {
 				sy[i] = crypto.CZeros(cryptoParams, 1)
 			}
 			log.LLvl1(time.Now().Format(time.RFC3339), "sy set to zero")
 		} else {
+			// 1ᵀQ = 0 identically (see the sx comment above), so sy is just the raw
+			// phenotype sum -- no (1ᵀQ)(QᵀY) term to compute or subtract.
 			sy = make(crypto.CipherMatrix, npheno)
 			buffer := make([]float64, slots)
 			for i := 0; i < npheno; i++ {
 				Ysum := floats.Sum(Yt.RawRowView(i))
-				for i := range buffer {
-					buffer[i] = Ysum
+				for j := range buffer {
+					buffer[j] = Ysum
 				}
 				OnetYloc, _ := crypto.EncryptFloatVector(cryptoParams, buffer)
-				OnetY := mpcObj.Network.AggregateCVec(cryptoParams, OnetYloc)
-				ct := crypto.InnerProd(cryptoParams, OnetQ, YtQ[i])
-				sy[i] = crypto.CSub(cryptoParams, OnetY, crypto.CipherVector{ct})
+				sy[i] = mpcObj.Network.AggregateCVec(cryptoParams, OnetYloc)
 			}
 		}
 
