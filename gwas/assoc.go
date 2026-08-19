@@ -1144,7 +1144,7 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 				result := make(crypto.CipherMatrix, ncov)
 				for i := 0; i < ncov; i++ {
 					Si := crypto.CipherMatrix{Sct[i]}
-					out := CMultMatRowTimesRow(cryptoParams, Si, Aenc[:i+1], numThreads)
+					// out := CMultMatRowTimesRow(cryptoParams, Si, Aenc[:i+1], numThreads)
 					out := CPMultMatRowTimesRow(cryptoParams, Si, Aenc[:i+1], numThreads)
 					result[i] = out[0]
 				}
