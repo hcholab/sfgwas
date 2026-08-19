@@ -1265,9 +1265,9 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		if pid > 0 {
 			for i := 0; i < ncov; i++ {
 				row := Zt.RawRowView(i)
+
 				z1Local.Set(0, i, floats.Sum(row)/float64(nrowsTotal))
-				floats.Mul(row, row)
-				zz1Local.Set(0, i, floats.Sum(row)/float64(nrowsTotal))
+				zz1Local.Set(0, i, floats.Dot(row, row)/float64(nrowsTotal))
 			}
 		}
 		z1ss := mpc.DenseToRMat(rtype, z1Local, fracBits)[0]
@@ -1279,7 +1279,7 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		}
 		for i := 0; i < ncov; i++ {
 			floats.AddConst(-z1[i], Zt.RawRowView(i))
-			floats.Scale(math.Sqrt(float64(nrowsTotal))/zz1[i], Zt.RawRowView(i))
+			floats.Scale(10.0/zz1[i], Zt.RawRowView(i))
 		}
 	}
 
@@ -1299,6 +1299,11 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 			}
 		}
 		mu = mpc.DenseToRMat(rtype, z1Local, fracBits)
+
+		if debug && pid > 0 {
+			SaveFloatMatrixToFileRowMajor(ast.general.CachePath("mu.txt"), mpcObj.RevealSymMat(mu).ToFloat(fracBits))
+		}
+
 	} else {
 		log.LLvl1("Warning: assumes the first covariate is all ones (if not, reorder input)")
 	}
