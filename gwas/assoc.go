@@ -1319,6 +1319,11 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	tmp.SymOuterK(nrowsTotalInvSqrt, Zt) // Scale Zt*Z by 1/sqrt(n)
 	ZtZss := mpc.DenseToRMat(rtype, &tmp, fracBits)
 
+	if debug && pid > 0 {
+		ZtZr := mpcObj.RevealSymMat(ZtZss).ToFloat(fracBits)
+		SaveFloatMatrixToFileRowMajor(ast.general.CachePath("ZtZ.txt"), ZtZr)
+	}
+
 	// Also capture ZtZ at higher fracBits from the same plaintext tmp, before it's
 	// discarded -- see covOrthoHighPrec's doc comment. Only meaningful for the Cholesky
 	// branch (eigen already has its own, separate precision story via EigenDecomp).
@@ -1342,15 +1347,6 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	// YtQ·B, ...), so any S with SᵀS = sqrt(n)·(ZtZss)^{-1} is interchangeable — see
 	// computeCovOrthoFactor for the two constructions available (config.UseEigenCovOrtho).
 	scaling := rtype.FromFloat64(math.Sqrt(math.Sqrt(float64(nrowsTotal))), fracBits)
-
-	// ZtZ is the earliest checkpoint in the covariate-orthogonalization chain -- dumped
-	// before it's decomposed at all, so a divergence here isolates to how ZtZ itself was
-	// formed (data/QC/individual-count mismatch) rather than to Cholesky or anything
-	// downstream of it. Compare against oracle_ZtZ.txt.
-	if debug && pid > 0 {
-		ZtZr := mpcObj.RevealSymMat(ZtZss).ToFloat(fracBits)
-		SaveFloatMatrixToFileRowMajor(ast.general.CachePath("ZtZ.txt"), ZtZr)
-	}
 
 	// Mean-center ZtZ: Z0tZ0 = ZtZ - n*mu*muT (see derivation notes). ZtZss already carries the
 	// 1/sqrt(n) scaling from the SymOuterK call above, so the correction term needs the matching
