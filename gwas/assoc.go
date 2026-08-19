@@ -1279,7 +1279,7 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		}
 		for i := 0; i < ncov; i++ {
 			floats.AddConst(-z1[i], Zt.RawRowView(i))
-			floats.Scale(1.0/zz1[i], Zt.RawRowView(i))
+			floats.Scale(math.Sqrt(float64(nrowsTotal))/zz1[i], Zt.RawRowView(i))
 		}
 	}
 
