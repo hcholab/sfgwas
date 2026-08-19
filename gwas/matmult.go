@@ -1853,6 +1853,10 @@ func CMultMatRowTimesRow(cryptoParams *crypto.CryptoParams, N, M crypto.CipherMa
 	return CMultMatRowTimesRowV3(cryptoParams, N, M, numThreads)
 }
 
+func CPMultMatRowTimesRow(cryptoParams *crypto.CryptoParams, N crypto.CipherMatrix, M crypto.PlainMatrix, numThreads int) crypto.CipherMatrix {
+	return CPMultMatRowTimesRowV3(cryptoParams, N, M, numThreads)
+}
+
 // firstError records the first error reported by any of a group of goroutines.
 type firstError struct {
 	mu  sync.Mutex
@@ -1906,6 +1910,22 @@ func checkRowTimesRowDims(cryptoParams *crypto.CryptoParams, N, M crypto.CipherM
 	}
 	if level := Min(N[0][0].Level(), M[0][0].Level()); level < 2 {
 		panic(fmt.Sprintf("CMultMatRowTimesRow: needs 2 levels, inputs are at level %d; refresh them first", level))
+	}
+	return nRows, inner, outCtx, true
+}
+
+func checkRowTimesRowDimsPlain(cryptoParams *crypto.CryptoParams, N crypto.CipherMatrix, M crypto.PlainMatrix) (nRows, inner, outCtx int, ok bool) {
+	nRows, inner = len(N), len(M)
+	if nRows == 0 || inner == 0 {
+		return 0, 0, 0, false
+	}
+	outCtx = len(M[0])
+
+	if maxInner := len(N[0]) * cryptoParams.GetSlots(); inner > maxInner {
+		panic(fmt.Sprintf("CPMultMatRowTimesRow: shared dimension %d exceeds the %d values encoded per row of N", inner, maxInner))
+	}
+	if level := Min(N[0][0].Level(), M[0][0].Level()); level < 2 {
+		panic(fmt.Sprintf("CPMultMatRowTimesRow: needs 2 levels, inputs are at level %d; refresh them first", level))
 	}
 	return nRows, inner, outCtx, true
 }
@@ -2120,6 +2140,76 @@ func CMultMatRowTimesRowV3(cryptoParams *crypto.CryptoParams, N, M crypto.Cipher
 	return result
 }
 
+func CPMultMatRowTimesRowV3(cryptoParams *crypto.CryptoParams, N crypto.CipherMatrix, M crypto.PlainMatrix, numThreads int) crypto.CipherMatrix {
+	slots := cryptoParams.GetSlots()
+	numThreads = Max(1, numThreads)
+
+	nRows, inner, outCtx, ok := checkRowTimesRowDimsPlain(cryptoParams, N, M)
+	if !ok {
+		return nil
+	}
+
+	var failure firstError
+
+	result := make(crypto.CipherMatrix, nRows)
+	for i := range result {
+		result[i] = make(crypto.CipherVector, outCtx)
+	}
+
+	// Replicated elements of the row of N currently being computed; overwritten in
+	// full on every iteration.
+	rep := make(crypto.CipherVector, inner)
+
+	for i := 0; i < nRows; i++ {
+		parallelBlocks(inner, numThreads, func(start, end int) {
+			onehot := make([]float64, slots)
+
+			for j := start; j < end; j++ {
+				ctid, slotid := j/slots, j%slots
+
+				onehot[slotid] = 1.0
+				mask, _ := crypto.EncodeFloatVector(cryptoParams, onehot)
+				onehot[slotid] = 0.0
+
+				err := cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+					ct := eval.MulRelinNew(N[i][ctid], mask[0])
+					if err := eval.Rescale(ct, cryptoParams.Params.Scale(), ct); err != nil {
+						return err
+					}
+					replicateSlots(eval, ct, slots)
+					rep[j] = ct
+					return nil
+				})
+				if err != nil {
+					failure.record(err)
+					return
+				}
+			}
+		})
+		if err := failure.get(); err != nil {
+			panic(fmt.Sprintf("CMultMatRowTimesRowV3: masking row %d of N failed: %v", i, err))
+		}
+
+		parallelBlocks(outCtx, numThreads, func(start, end int) {
+			failure.record(cryptoParams.WithEvaluator(func(eval ckks.Evaluator) error {
+				for c := start; c < end; c++ {
+					acc, err := accumulateColumnPlain(eval, cryptoParams, M, rep, c, inner)
+					if err != nil {
+						return err
+					}
+					result[i][c] = acc
+				}
+				return nil
+			}))
+		})
+		if err := failure.get(); err != nil {
+			panic(fmt.Sprintf("CPMultMatRowTimesRowV3: computing row %d failed: %v", i, err))
+		}
+	}
+
+	return result
+}
+
 // replicateSlots copies the single surviving slot of ct across all of them, in
 // place. Equivalent to crypto.InnerSumAll on a one-ciphertext vector, but takes an
 // evaluator so the caller can hold one for the whole doubling loop instead of
@@ -2137,6 +2227,22 @@ func accumulateColumn(eval ckks.Evaluator, cryptoParams *crypto.CryptoParams, M 
 	var acc *ckks.Ciphertext
 	for j := 0; j < inner; j++ {
 		prod := eval.MulRelinNew(M[j][c], rep[j])
+		if acc == nil {
+			acc = prod
+		} else {
+			eval.Add(acc, prod, acc)
+		}
+	}
+	if err := eval.Rescale(acc, cryptoParams.Params.Scale(), acc); err != nil {
+		return nil, err
+	}
+	return acc, nil
+}
+
+func accumulateColumnPlain(eval ckks.Evaluator, cryptoParams *crypto.CryptoParams, M crypto.PlainMatrix, rep crypto.CipherVector, c, inner int) (*ckks.Ciphertext, error) {
+	var acc *ckks.Ciphertext
+	for j := 0; j < inner; j++ {
+		prod := eval.MulNew(M[j][c], rep[j])
 		if acc == nil {
 			acc = prod
 		} else {
