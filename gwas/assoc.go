@@ -1267,7 +1267,7 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		z1Local := mat.NewDense(ncov, 1, nil)
 		if pid > 0 {
 			for i := 0; i < ncov; i++ {
-				z1Local.Set(i, 0, floats.Sum(Zt.RawRowView(i)) * nrowsTotalInv)
+				z1Local.Set(i, 0, floats.Sum(Zt.RawRowView(i))*nrowsTotalInv)
 			}
 		}
 		mu = mpc.DenseToRMat(rtype, z1Local, fracBits)
@@ -1322,14 +1322,15 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	// Mean-center ZtZ: Z0tZ0 = ZtZ - n*mu*muT (see derivation notes). ZtZss already carries the
 	// 1/sqrt(n) scaling from the SymOuterK call above, so the correction term needs the matching
 	// sqrt(n) factor (n/sqrt(n)) rather than a bare n.
-	ZtZcss := ZtZss
+	ZtZcss := ZtZss.Copy()
 	if !covAllOnes {
-		muOuter := mpcObj.SSMultMat(mu, mu.Transpose())
-		muOuter = mpcObj.TruncMat(muOuter, dataBits, fracBits)
-		muOuter.MulScalar(rtype.FromFloat64(math.Sqrt(float64(nrowsTotal)), fracBits))
+		muScaled := mu.Copy()
+		muScaled.MulScalar(rtype.FromFloat64(math.Sqrt(float64(nrowsTotal)), fracBits))
+		muScaled = mpcObj.TruncMat(muScaled, dataBits, fracBits)
+
+		muOuter := mpcObj.SSMultMat(muScaled, mu.Transpose())
 		muOuter = mpcObj.TruncMat(muOuter, dataBits, fracBits)
 
-		ZtZcss = ZtZss.Copy()
 		ZtZcss.Sub(muOuter)
 	}
 	covOrtho := ast.computeCovOrthoFactor(cryptoParams, ZtZcss, scaling, hiPrec, numThreads)
@@ -1348,12 +1349,16 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	var SmuCT crypto.CipherVector
 	if !covAllOnes {
 		Smu := covOrtho.applySS(mu)
+
+		if debug && pid > 0 {
+			Smur := mpcObj.RevealSymMat(Smu).ToFloat(fracBits)
+			SaveFloatMatrixToFileRowMajor(ast.general.CachePath("Smu.txt"), Smur)
+		}
+
 		SmuCT = crypto.CZeros(cryptoParams, ncov)
 		for i := range SmuCT {
-			SmuCT[i] = mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{Smu[i][0]})
-			if pid > 0 { // no share on party 0; SStoCiphertext left it nil
-				SmuCT[i] = crypto.InnerSumAll(cryptoParams, crypto.CipherVector{SmuCT[i]})
-			}
+			rv := mpc_core.InitRVec(Smu[i][0], slots)
+			SmuCT[i] = mpcObj.SStoCiphertext(cryptoParams, rv)
 		}
 	}
 
@@ -1379,7 +1384,7 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		if !covAllOnes {
 			Ysum := mat.NewDense(1, npheno, nil)
 			for i := 0; i < npheno; i++ {
-				Ysum.Set(0, i, floats.Sum(Yt.RawRowView(i)) * nrowsTotalInvSqrt)
+				Ysum.Set(0, i, floats.Sum(Yt.RawRowView(i))*nrowsTotalInvSqrt)
 			}
 			YsumMatss = mpc.DenseToRMat(rtype, Ysum, fracBits)
 		}
