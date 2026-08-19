@@ -1258,23 +1258,29 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	Zt := ast.covPc
 	Yt := ast.pheno
 
-	// Scale Zt (covariates) to have capped norm in plaintext
-	// jointly between two parties
-	zz1Local := mat.NewDense(1, ncov, nil)
-	if pid > 0 {
-		for i := 0; i < ncov; i++ {
-			row := Zt.RawRowView(i)
-			floats.Mul(row, row)
-			zz1Local.Set(0, i, floats.Sum(row))
+	// Standardize Zt (covariates)
+	if !covAllOnes {
+		z1Local := mat.NewDense(1, ncov, nil)
+		zz1Local := mat.NewDense(1, ncov, nil)
+		if pid > 0 {
+			for i := 0; i < ncov; i++ {
+				row := Zt.RawRowView(i)
+				z1Local.Set(0, i, floats.Sum(row)/float64(nrowsTotal))
+				floats.Mul(row, row)
+				zz1Local.Set(0, i, floats.Sum(row)/float64(nrowsTotal))
+			}
 		}
-	}
-	zz1ss := mpc.DenseToRMat(rtype, zz1Local, fracBits)[0]
-	zz1 := mpcObj.RevealSymVec(zz1ss).ToFloat(fracBits)
-	for i := 0; i < ncov; i++ {
-		zz1[i] = math.Sqrt(zz1[i])
-	}
-	for i := 0; i < ncov; i++ {
-		floats.Scale(1.0/zz1[i], Zt.RawRowView(i))
+		z1ss := mpc.DenseToRMat(rtype, z1Local, fracBits)[0]
+		zz1ss := mpc.DenseToRMat(rtype, zz1Local, fracBits)[0]
+		z1 := mpcObj.RevealSymVec(z1ss).ToFloat(fracBits)
+		zz1 := mpcObj.RevealSymVec(zz1ss).ToFloat(fracBits)
+		for i := 0; i < ncov; i++ {
+			zz1[i] = math.Sqrt(zz1[i] - z1[i]*z1[i])
+		}
+		for i := 0; i < ncov; i++ {
+			floats.AddConst(-z1[i], Zt.RawRowView(i))
+			floats.Scale(1.0/zz1[i], Zt.RawRowView(i))
+		}
 	}
 
 	// Secret-shared mean of covariates (ncov-by-1), used for lazy mean-centering when no
