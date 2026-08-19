@@ -1258,6 +1258,25 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	Zt := ast.covPc
 	Yt := ast.pheno
 
+	// Scale Zt (covariates) to have capped norm in plaintext
+	// jointly between two parties
+	zz1Local := mat.NewDense(1, ncov, nil)
+	if pid > 0 {
+		for i := 0; i < ncov; i++ {
+			row := Zt.RawRowView(i)
+			floats.Mul(row, row)
+			zz1Local.Set(0, i, floats.Sum(row))
+		}
+	}
+	zz1ss := mpc.DenseToRMat(rtype, zz1Local, fracBits)[0]
+	zz1 := mpcObj.RevealSymVec(zz1ss).ToFloat(fracBits)
+	for i := 0; i < ncov; i++ {
+		zz1[i] = math.Sqrt(zz1[i])
+	}
+	for i := 0; i < ncov; i++ {
+		floats.Scale(1.0/zz1[i], Zt.RawRowView(i))
+	}
+
 	// Secret-shared mean of covariates (ncov-by-1), used for lazy mean-centering when no
 	// explicit all-ones covariate is present. Each party's local column sum, already divided
 	// by the (public) total sample count before fixed-point encoding, is directly a valid
