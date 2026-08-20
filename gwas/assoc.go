@@ -1264,7 +1264,7 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 			// Party 0 holds no share of the data; its Zt is a dummy placeholder and must
 			// stay all-zero so that it contributes nothing to the shared Zt*Z below.
 			for i := 0; i < cols; i++ {
-				ones.Set(0, i, 1)
+				ones.Set(0, i, nrowsTotalInvSqrt) // scaling by 1/sqrt(n)
 			}
 		}
 
