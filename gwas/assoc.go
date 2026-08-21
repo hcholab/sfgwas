@@ -1134,7 +1134,7 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 				// contract (N i-by-k, M k-by-m) with N and M's shared/k dimension cut down
 				// from ncov to i+1, which is exactly where that function's cost comes from
 				// (masking+replicating one element of N per row of M).
-				Aenc, _, _, err := crypto.EncryptFloatMatrixRow(cryptoParams, APlain[:ncov])
+				Aenc, _, _, err := crypto.EncodeFloatMatrixRow(cryptoParams, APlain[:ncov])
 				if err != nil {
 					panic(err)
 				}
@@ -1142,7 +1142,7 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 				result := make(crypto.CipherMatrix, ncov)
 				for i := 0; i < ncov; i++ {
 					Si := crypto.CipherMatrix{Sct[i]}
-					out := CPMultMatRowTimesRow(cryptoParams, Si, Aenc[:i+1], numThreads)
+					out := CPMultMatRowTimesRowV3(cryptoParams, Si, Aenc[:i+1], numThreads)
 					result[i] = out[0]
 				}
 
