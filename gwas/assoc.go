@@ -1142,7 +1142,7 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 				result := make(crypto.CipherMatrix, ncov)
 				for i := 0; i < ncov; i++ {
 					Si := crypto.CipherMatrix{Sct[i]}
-					out := CMultMatRowTimesRow(cryptoParams, Si, Aenc[:i+1], numThreads)
+					out := CPMultMatRowTimesRow(cryptoParams, Si, Aenc[:i+1], numThreads)
 					result[i] = out[0]
 				}
 
@@ -1198,11 +1198,11 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 		applyCTAdditive: func(APlain [][]float64) crypto.CipherMatrix {
 			// Unlike Cholesky's S, V isn't triangular, so there's no nonzero-prefix
 			// shortcut here -- just encrypt and reuse applyCT's full product.
-			Aenc, _, _, err := crypto.EncryptFloatMatrixRow(cryptoParams, APlain[:ncov])
+			Aenc, _, _, err := crypto.EncodeFloatMatrixRow(cryptoParams, APlain[:ncov])
 			if err != nil {
 				panic(err)
 			}
-			B := CMultMatRowTimesRow(cryptoParams, Vt, Aenc, numThreads)
+			B := CPMultMatRowTimesRowV3(cryptoParams, Vt, Aenc, numThreads)
 			for i := range B {
 				B[i] = crypto.CMultScalar(cryptoParams, B[i], LsqrtInv[i])
 			}
