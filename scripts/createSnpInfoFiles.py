@@ -18,11 +18,9 @@ for chr in range(1,23):
     pvar_fname = (pgen_filename_template % chr) + ".pvar"
 
     with open(pvar_fname, "r") as fp:
-        first_line = True
         count = 0
         for line in fp:
-            if first_line:
-                first_line = False
+            if line.startswith("#"):
                 continue
             tok = line.split()[:3]
             pos_file.write(f"{tok[0]}\t{tok[1]}\n")
