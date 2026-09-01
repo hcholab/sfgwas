@@ -25,9 +25,12 @@ func fileExists(filename string) bool {
 	return !info.IsDir()
 }
 
-// Reads in a binary file containing 6 vectors of length m (# of SNPs):
-// ref allele count (AC), alt AC, hom-ref genotype count (GC), het GC,
-// hom-alt GC, missing sample count.
+// Reads in a binary file containing 6 vectors of length m (# of SNPs), in this order:
+// hom-ref genotype count (GC), het GC, hom-alt GC, hap-ref count, hap-alt count,
+// missing sample count. Vectors 3 and 4 (the haploid counts) are read but discarded --
+// they are only present because that is the layout scripts/computeGenoCounts.py emits
+// from plink2 --geno-counts. The returned allele counts (ac) are derived from the three
+// genotype counts, not read from the file.
 // Each value is encoded as uint32 in little endian format
 func ReadGenoStatsFromFile(filename string, m int) (ac, gc [][]uint32, miss []uint32) {
 	nstats := 6
@@ -38,6 +41,20 @@ func ReadGenoStatsFromFile(filename string, m int) (ac, gc [][]uint32, miss []ui
 	}
 	defer file.Close()
 
+	// Check the size upfront. The loop below reads exactly nstats*4*m bytes and cannot
+	// distinguish a truncated file from one built with the wrong number of columns; it
+	// just fails with a bare "EOF" naming neither the file nor m, on whichever party
+	// reaches it first. Report the arithmetic here, where the cause is still visible.
+	if info, err := file.Stat(); err == nil {
+		want := int64(nstats) * 4 * int64(m)
+		if info.Size() != want {
+			log.Fatalf("%s: expected %d bytes (%d stats x 4 bytes x %d snps), found %d"+
+				" (= %g stats per snp); regenerate with scripts/computeGenoCounts.py, or"+
+				" correct num_snps", filename, want, nstats, m, info.Size(),
+				float64(info.Size())/float64(4*m))
+		}
+	}
+
 	reader := bufio.NewReader(file)
 
 	out := make([][]uint32, nstats)
@@ -46,7 +63,7 @@ func ReadGenoStatsFromFile(filename string, m int) (ac, gc [][]uint32, miss []ui
 		out[s] = make([]uint32, m)
 
 		if _, err := io.ReadFull(reader, buf); err != nil {
-			log.Fatal(err)
+			log.Fatalf("%s: reading stat vector %d of %d (%d snps): %v", filename, s+1, nstats, m, err)
 		}
 
 		for i := range out[s] {
