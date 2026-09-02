@@ -1,0 +1,73 @@
+num_main_parties = 2
+hub_party_id = 1
+debug = true
+
+## Crypto parameters
+ckks_params = "PN14QP438"
+
+# MPC parameters
+phase = ""
+mpc_num_threads = 4
+mpc_field_size = 256
+mpc_data_bits = 60
+mpc_frac_bits = 30
+div_sqrt_max_len = 1000000
+mpc_boolean_shares = true
+
+## Data dimensions
+num_inds = [0, 20, 20]
+num_snps = 30
+num_covs = 2
+cov_all_ones = false
+
+## Input file options (supports "blocks" or "pgen")
+geno_file_format = "blocks"
+use_precomputed_geno_count = false
+geno_num_blocks = 1
+
+## Quality control parameters -- skipped: this fixture only exercises TractorPhase3
+use_cached_qc = false
+skip_qc = true
+imiss_ub = 1.0
+het_lb = 0.0
+het_ub = 1.0
+gmiss = 1.0
+maf_lb = 0.0
+hwe_ub = 1e9
+snp_dist_thres = 1
+
+## PCA parameters -- skipped
+use_cached_pca = false
+skip_pca = true
+iter_per_eigenval = 1
+num_pcs_to_remove = 0
+num_oversampling = 1
+num_power_iters = 1
+
+## Assoc test parameters
+use_cached_combined_q = false
+blocks_for_assoc_test = []
+pgen_batch_nsnp = 8192
+use_plain_mult_phase_3 = true
+use_eigen_cov_ortho = false
+use_high_prec_cov_ortho = false
+
+## Tractor
+use_tractor_phase_3 = true
+tractor_count_threshold = 5
+tractor_det_tol = 1e-9
+
+## Networking parameters
+binding_ipaddr = "0.0.0.0"
+
+[servers.party0]
+ipaddr = "127.0.0.1"
+ports = { party1 = "59020", party2 = "59040" }
+
+[servers.party1]
+ipaddr = "127.0.0.1"
+ports = { party2 = "59060" }
+
+[servers.party2]
+ipaddr = "127.0.0.1"
+ports = {}

@@ -8,3 +8,6 @@ lattigo/
 mpc-core/
 *.log
 compare_results/
+Tractor/
+tractor_fixture/
+tractor_sim/

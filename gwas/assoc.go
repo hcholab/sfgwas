@@ -88,7 +88,10 @@ func (g *ProtocolInfo) InitAssociationTestsPlainMult(QpcPlain *mat.Dense) *Assoc
 	}
 	gwasParams.SetNumPheno(npheno)
 
-	if pid > 0 && QpcPlain == nil {
+	// QpcPlain is only required when there are actually PCs to consume -- with npc==0
+	// (PCA skipped or genuinely found no PCs) Phase2 leaves it nil rather than
+	// constructing a zero-row *mat.Dense, which gonum's mat.NewDense can't represent.
+	if pid > 0 && QpcPlain == nil && npc > 0 {
 		log.Fatal("Plaintext Qpca has not been provided")
 	}
 
@@ -105,22 +108,30 @@ func (g *ProtocolInfo) InitAssociationTestsPlainMult(QpcPlain *mat.Dense) *Assoc
 
 		_, phenoCols := phenoPlain.Dims()
 		covRows, covCols := covPlain.Dims()
-		qpcRows, qpcCols := QpcPlain.Dims()
 
 		if covRows != ncov {
 			log.Fatalf("covPlain has %d rows; expected ncov=%d", covRows, ncov)
 		}
 
-		if qpcRows != npc {
-			log.Fatalf("QpcPlain has %d rows; expected npc=%d", qpcRows, npc)
-		}
+		if npc > 0 {
+			qpcRows, qpcCols := QpcPlain.Dims()
 
-		if qpcCols != nsample || covCols != nsample || phenoCols != nsample {
-			log.Fatalf("Inconsistent local sample count (expected %d; Qpc %d, cov %d, pheno %d)", nsample, qpcCols, covCols, phenoCols)
-		}
+			if qpcRows != npc {
+				log.Fatalf("QpcPlain has %d rows; expected npc=%d", qpcRows, npc)
+			}
 
-		covPcPlain = mat.NewDense(ncov+npc, nsample, nil)
-		covPcPlain.Stack(covPlain, QpcPlain)
+			if qpcCols != nsample || covCols != nsample || phenoCols != nsample {
+				log.Fatalf("Inconsistent local sample count (expected %d; Qpc %d, cov %d, pheno %d)", nsample, qpcCols, covCols, phenoCols)
+			}
+
+			covPcPlain = mat.NewDense(ncov+npc, nsample, nil)
+			covPcPlain.Stack(covPlain, QpcPlain)
+		} else {
+			if covCols != nsample || phenoCols != nsample {
+				log.Fatalf("Inconsistent local sample count (expected %d; cov %d, pheno %d)", nsample, covCols, phenoCols)
+			}
+			covPcPlain = covPlain
+		}
 
 	} else {
 		phenoPlain = mat.NewDense(npheno, 1, nil)

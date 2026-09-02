@@ -1,0 +1,23 @@
+## Shared keys
+shared_keys_path = "example_data/keys"
+
+## Data files
+geno_binary_file_prefix = "tractor_fixture/party2/geno"
+geno_block_size_file = "tractor_fixture/party2/geno_block_sizes.txt"
+pheno_file = "tractor_fixture/party2/pheno.txt"
+covar_file = "tractor_fixture/party2/cov.txt"
+snp_position_file = "tractor_fixture/party2/snp_pos.txt"
+
+## Tractor: ancestry-partitioned genotype dosage
+tractor_geno_prefix_a = "tractor_fixture/party2/tractor_a"
+tractor_geno_prefix_amr = "tractor_fixture/party2/tractor_amr"
+tractor_geno_prefix_eur = "tractor_fixture/party2/tractor_eur"
+
+## Output and cache paths
+output_dir = "out/party2_tractor"
+cache_dir = "cache/party2_tractor"
+
+## Computational parameters
+local_num_threads = 4
+memory_limit = 4000000000
+assoc_num_blocks_parallel = 1
