@@ -88,7 +88,10 @@ func (g *ProtocolInfo) InitAssociationTestsPlainMult(QpcPlain *mat.Dense) *Assoc
 	}
 	gwasParams.SetNumPheno(npheno)
 
-	if pid > 0 && QpcPlain == nil {
+	// npc == 0 (PCA skipped -- see Phase2) means Qpca/QpcaPlain are nil throughout, not a
+	// zero-row *mat.Dense: gonum's mat.NewDense panics on any zero dimension, so a
+	// placeholder can't be constructed, and there's nothing to stack in anyway.
+	if pid > 0 && npc > 0 && QpcPlain == nil {
 		log.Fatal("Plaintext Qpca has not been provided")
 	}
 
@@ -105,22 +108,31 @@ func (g *ProtocolInfo) InitAssociationTestsPlainMult(QpcPlain *mat.Dense) *Assoc
 
 		_, phenoCols := phenoPlain.Dims()
 		covRows, covCols := covPlain.Dims()
-		qpcRows, qpcCols := QpcPlain.Dims()
 
 		if covRows != ncov {
 			log.Fatalf("covPlain has %d rows; expected ncov=%d", covRows, ncov)
 		}
 
-		if qpcRows != npc {
-			log.Fatalf("QpcPlain has %d rows; expected npc=%d", qpcRows, npc)
+		if covCols != nsample || phenoCols != nsample {
+			log.Fatalf("Inconsistent local sample count (expected %d; cov %d, pheno %d)", nsample, covCols, phenoCols)
 		}
 
-		if qpcCols != nsample || covCols != nsample || phenoCols != nsample {
-			log.Fatalf("Inconsistent local sample count (expected %d; Qpc %d, cov %d, pheno %d)", nsample, qpcCols, covCols, phenoCols)
-		}
+		if npc == 0 {
+			covPcPlain = covPlain
+		} else {
+			qpcRows, qpcCols := QpcPlain.Dims()
 
-		covPcPlain = mat.NewDense(ncov+npc, nsample, nil)
-		covPcPlain.Stack(covPlain, QpcPlain)
+			if qpcRows != npc {
+				log.Fatalf("QpcPlain has %d rows; expected npc=%d", qpcRows, npc)
+			}
+
+			if qpcCols != nsample {
+				log.Fatalf("Inconsistent local sample count (expected %d; Qpc %d)", nsample, qpcCols)
+			}
+
+			covPcPlain = mat.NewDense(ncov+npc, nsample, nil)
+			covPcPlain.Stack(covPlain, QpcPlain)
+		}
 
 	} else {
 		phenoPlain = mat.NewDense(npheno, 1, nil)
@@ -546,7 +558,10 @@ func (ast *AssocTest) GenoBlockMult(b int, mat crypto.CipherMatrix) (matOut cryp
 	return
 }
 
-func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
+// Returns (stats, beta, filter): stats is the original per-SNP, per-phenotype
+// correlation-coefficient output, unchanged; beta is the additional per-SNP, per-phenotype
+// effect size estimate (Sxy_resid / var(x)), same layout as stats.
+func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, crypto.CipherMatrix, []bool) {
 	debug := ast.general.config.Debug
 
 	covAllOnes := ast.general.config.CovAllOnes // Flag indicating whether cov includes an all-ones covariate
@@ -913,7 +928,13 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
 	}
 
 	if pid > 0 {
+		// beta = Sxy_resid / var(x) = Sxy_resid * stdinvx^2. Unlike the correlation
+		// coefficient below, sd(y) does not enter: beta is a slope in Y's own units.
+		// stdinvx^2 is shared across phenotypes, so it is squared once, up front.
+		stdinvx2 := crypto.CMult(cryptoParams, stdinvx, stdinvx) // 1 / var(x)
+
 		stats := make(crypto.CipherMatrix, multiPhenoSize)
+		betas := make(crypto.CipherMatrix, multiPhenoSize)
 		for i := 0; i < multiPhenoSize; i++ {
 			var s crypto.CipherVector
 			if !covAllOnes {
@@ -922,17 +943,21 @@ func (ast *AssocTest) GetAssociationStats() (crypto.CipherMatrix, []bool) {
 			} else {
 				s = sxy[i]
 			}
-			s = crypto.CMult(cryptoParams, s, stdinvx)          // stdinvx * (sxy[i] - ...)
-			s = crypto.CMultScalar(cryptoParams, s, stdinvy[i]) // stdinvx * stdinvy[i] * ...
-			stats[i] = s
+
+			// s is left untouched below so beta can reuse it.
+			st := crypto.CMult(cryptoParams, s, stdinvx)          // stdinvx * (sxy[i] - ...)
+			st = crypto.CMultScalar(cryptoParams, st, stdinvy[i]) // stdinvx * stdinvy[i] * ...
+			stats[i] = st
+
+			betas[i] = crypto.CMult(cryptoParams, s, stdinvx2) // Sxy_resid / var(x)
 		}
 
 		log.LLvl1(time.Now().Format(time.RFC3339), "All done!")
 
-		return stats, outFilter
+		return stats, betas, outFilter
 	}
 
-	return nil, nil // party 0
+	return nil, nil, nil // party 0
 }
 
 // covOrthoFactor applies S (see computeCovOrthoFactor) to a target matrix, in either
@@ -1217,7 +1242,10 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 // Optimized version that assumes PCs are provided in plaintext.
 // Performs multiplications on local plaintext matrices to avoid expensive cipher-plain operations
 // on the large genotype matrix. Corrects for covariates post-multiplication using the inverse covariance matrix
-func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatrix, []bool) {
+// Returns (stats, beta, filter): stats is the original per-SNP, per-phenotype
+// correlation-coefficient output, unchanged; beta is the additional per-SNP, per-phenotype
+// effect size estimate (Sxy_resid / var(x)), same layout as stats.
+func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatrix, crypto.CipherMatrix, []bool) {
 	debug := ast.general.config.Debug
 
 	numThreads := ast.general.config.LocalNumThreads
@@ -1651,7 +1679,13 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	}
 
 	if pid > 0 {
+		// beta = Sxy_resid / var(x) = Sxy_resid * stdinvx^2. Unlike the correlation
+		// coefficient below, sd(y) does not enter: beta is a slope in Y's own units.
+		// stdinvx^2 is shared across phenotypes, so it is squared once, up front.
+		stdinvx2 := crypto.CMult(cryptoParams, stdinvx, stdinvx) // 1 / var(x)
+
 		stats := make(crypto.CipherMatrix, npheno)
+		betas := make(crypto.CipherMatrix, npheno)
 		for i := 0; i < npheno; i++ {
 			var s crypto.CipherVector
 			if !covAllOnes {
@@ -1660,17 +1694,21 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 			} else {
 				s = sxy[i]
 			}
-			s = crypto.CMult(cryptoParams, s, stdinvx)          // stdinvx * (sxy[i] - ...)
-			s = crypto.CMultScalar(cryptoParams, s, stdinvy[i]) // stdinvx * stdinvy[i] * ...
-			stats[i] = s
+
+			// s is left untouched below so beta can reuse it.
+			st := crypto.CMult(cryptoParams, s, stdinvx)          // stdinvx * (sxy[i] - ...)
+			st = crypto.CMultScalar(cryptoParams, st, stdinvy[i]) // stdinvx * stdinvy[i] * ...
+			stats[i] = st
+
+			betas[i] = crypto.CMult(cryptoParams, s, stdinvx2) // Sxy_resid / var(x)
 		}
 
 		log.LLvl1(time.Now().Format(time.RFC3339), "All done!")
 
-		return stats, outFilter
+		return stats, betas, outFilter
 	}
 
-	return nil, nil // party 0
+	return nil, nil, nil // party 0
 }
 
 // Returns stdinvx (per-SNP) and stdinvy (one per phenotype)

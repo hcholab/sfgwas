@@ -377,6 +377,16 @@ func (g *ProtocolInfo) Phase2() (crypto.CipherMatrix, *mat.Dense) {
 
 	net.PrintNetworkLog()
 
+	// NumPC() == 0 (the SkipPCA branch above, "Qpca = nil, QpcaPlain = nil") has no rows to
+	// write or read: SaveMatrixToFile/LoadMatrixFromFile would round-trip an empty matrix,
+	// and gonum's mat.NewDense panics ("zero length in matrix dimension") on any zero
+	// dimension, so a placeholder Dense can't be constructed either. Every consumer of a nil
+	// QpcaPlain must check NumPC() == 0 before touching it (see
+	// InitAssociationTestsPlainMult).
+	if g.gwasParams.NumPC() == 0 {
+		return Qpca, nil
+	}
+
 	outFile := g.OutPath("pca.txt")
 	for p := 1; p <= g.config.NumMainParties; p++ {
 		SaveMatrixToFile(g.cps, g.mpcObj[0], Qpca, g.gwasParams.numFiltInds[p], p, outFile)
@@ -406,7 +416,7 @@ func (g *ProtocolInfo) Phase3(Qpca crypto.CipherMatrix, QpcaPlain *mat.Dense) {
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: Starting Association Tests")
 
-	assoc, outFilter := g.ComputeAssocStatistics(Qpca, QpcaPlain)
+	assoc, beta, outFilter := g.ComputeAssocStatistics(Qpca, QpcaPlain)
 
 	log.LLvl1(time.Now().Format(time.RFC3339), "Finished association tests")
 
@@ -414,9 +424,9 @@ func (g *ProtocolInfo) Phase3(Qpca crypto.CipherMatrix, QpcaPlain *mat.Dense) {
 
 	// Collective decrypt and save to file (one output file per phenotype)
 	if g.mpcObj[0].GetPid() > 0 {
-		for pheno := range assoc {
-			assocDec := g.mpcObj[0].Network.CollectiveDecryptVec(g.cps, assoc[pheno], -1)
-			out := crypto.DecodeFloatVector(g.cps, assocDec)
+		filterDecrypt := func(ct crypto.CipherVector) []float64 {
+			dec := g.mpcObj[0].Network.CollectiveDecryptVec(g.cps, ct, -1)
+			out := crypto.DecodeFloatVector(g.cps, dec)
 
 			outFinal := make([]float64, SumBool(outFilter))
 			index := 0
@@ -426,9 +436,17 @@ func (g *ProtocolInfo) Phase3(Qpca crypto.CipherMatrix, QpcaPlain *mat.Dense) {
 					index++
 				}
 			}
+			return outFinal
+		}
 
+		for pheno := range assoc {
+			// Original output, unchanged: the per-SNP correlation coefficient.
 			outFile := g.OutPath(fmt.Sprintf("assoc_%d.txt", pheno))
-			SaveFloatVectorToFile(outFile, outFinal)
+			SaveFloatVectorToFile(outFile, filterDecrypt(assoc[pheno]))
+
+			// Additional output: effect size (BETA), one value per SNP.
+			betaFile := g.OutPath(fmt.Sprintf("assoc_beta_%d.txt", pheno))
+			SaveFloatVectorToFile(betaFile, filterDecrypt(beta[pheno]))
 		}
 		log.LLvl1(time.Now().Format(time.RFC3339), "Output collectively decrypted and saved to assoc files")
 	}
@@ -738,7 +756,9 @@ func (g *ProtocolInfo) PopulationStratification() crypto.CipherMatrix {
 
 }
 
-func (g *ProtocolInfo) ComputeAssocStatistics(Qpca crypto.CipherMatrix, QpcaPlain *mat.Dense) (crypto.CipherMatrix, []bool) {
+// Returns (stats, beta, filter): the original per-SNP correlation-coefficient stats, plus
+// additional per-SNP, per-phenotype effect size estimates.
+func (g *ProtocolInfo) ComputeAssocStatistics(Qpca crypto.CipherMatrix, QpcaPlain *mat.Dense) (crypto.CipherMatrix, crypto.CipherMatrix, []bool) {
 	if g.config.UsePlainMultPhase3 {
 		assocTest := g.InitAssociationTestsPlainMult(QpcaPlain)
 		return assocTest.GetAssociationStatsPlainMult()
