@@ -99,6 +99,8 @@ type Config struct {
 
 	OutDir   string `toml:"output_dir"`
 	CacheDir string `toml:"cache_dir"`
+	// Where the PCs (Qpc) are cached/loaded; defaults to <cache_dir>/Qpc.txt
+	PCACacheFile string `toml:"pca_cache_file"`
 
 	Phase string `toml:"phase"`
 
@@ -337,7 +339,10 @@ func (g *ProtocolInfo) Phase2() (crypto.CipherMatrix, *mat.Dense) {
 	// the immediate re-read can race the write's visibility and see a truncated file,
 	// surfacing later as a confusing "QpcPlain has N rows; expected npc=M" in Phase3.
 	var QpcaPlainDense *mat.Dense
-	pcaCacheFile := g.CachePath("Qpc.txt")
+	pcaCacheFile := g.config.PCACacheFile
+	if pcaCacheFile == "" {
+		pcaCacheFile = g.CachePath("Qpc.txt")
+	}
 	if g.config.UseCachedPCA {
 
 		if pid > 0 {

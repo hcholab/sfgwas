@@ -17,6 +17,7 @@ geno_count_file = "../split_data/party2/all.gcount.transpose.bin"
 ## Output and cache paths
 output_dir = "out/party2"
 cache_dir = "cache/party2"
+pca_cache_file = "cache/party2/Qpc.txt"  # default: <cache_dir>/Qpc.txt
 
 ## Computational paramters
 local_num_threads = 8
