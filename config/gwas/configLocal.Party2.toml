@@ -3,7 +3,7 @@ shared_keys_path = "example_data/keys"
 
 ## Data files
 geno_binary_file_prefix = "../split_data/party2/geno/chr%d_10k"
-geno_num_blocks = 1
+geno_num_blocks = 22
 geno_block_size_file = "../split_data/party2/chrom_sizes.txt"
 pheno_file = "../split_data/party2/pheno.txt"
 covar_file = "../split_data/party2/cov_reduced.txt"
