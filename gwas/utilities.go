@@ -437,11 +437,25 @@ func SaveMatrixToFile(cps *crypto.CryptoParams, mpcObj *mpc.MPC, cm crypto.Ciphe
 		return
 	}
 
-	pm := mpcObj.Network.CollectiveDecryptMat(cps, cm, sourcePid)
-
 	M := mat.NewDense(len(cm), nElemCol, nil)
-	for i := range pm {
-		M.SetRow(i, crypto.DecodeFloatVector(cps, pm[i])[:nElemCol])
+	if sourcePid < 0 {
+		// Decrypt one row at a time. CollectiveDecryptMat keeps a ciphertext copy, every
+		// party's decryption shares and the resulting plaintexts alive for everything it
+		// is handed at once -- roughly 3.5x the input, ~10 GB per genome-wide row on
+		// PN14QP438. Handing it a whole ncov-row matrix (ztx/qtx in phase 3's debug dumps)
+		// was enough to get the process OOM-killed; per row, the peak no longer scales
+		// with the row count. All parties hold cm here, so they stay in step.
+		for i := range cm {
+			pv := mpcObj.Network.CollectiveDecryptVec(cps, cm[i], sourcePid)
+			M.SetRow(i, crypto.DecodeFloatVector(cps, pv)[:nElemCol])
+		}
+	} else {
+		// Only sourcePid holds cm; the others learn its dimensions inside
+		// CollectiveDecryptMat, so this stays a single call.
+		pm := mpcObj.Network.CollectiveDecryptMat(cps, cm, sourcePid)
+		for i := range pm {
+			M.SetRow(i, crypto.DecodeFloatVector(cps, pm[i])[:nElemCol])
+		}
 	}
 
 	if pid == sourcePid || sourcePid < 0 {
