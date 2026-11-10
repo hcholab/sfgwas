@@ -639,6 +639,10 @@ func (qc *QC) QualityControlProtocolWithPrecomputedGenoStats(useCache bool) {
 	// Update gwasParams
 	qc.general.gwasParams.SetFiltCounts(qc.filtNumInds, qc.filtNumSnps)
 	qc.general.gwasParams.SetSnpFilt(snpFilt)
+
+	if pid > 0 {
+		qc.general.qcSnpKeep = snpFilt // over all SNPs; no sample filter on this path
+	}
 }
 
 // QualityControlProtocol (1) applies SNP filters and individual filters to input data, (2) filters input wrt filters
@@ -784,8 +788,24 @@ func (qc *QC) QualityControlProtocol(useCache bool) {
 
 	// Filter pheno and cov data
 	if pid > 0 {
-		qc.general.pheno = FilterVec(qc.general.pheno, indFilt)
+		// FilterMat, not FilterVec: pheno may hold several phenotype columns, and FilterVec
+		// reads its input as a single column.
+		_, npheno := qc.general.pheno.Dims()
+		qc.general.pheno = FilterMat(qc.general.pheno, OnesBool(npheno), indFilt)
 		qc.general.cov = FilterMat(qc.general.cov, OnesBool(qc.general.gwasParams.NumCov()), indFilt)
+
+		// Record the composite filters (over raw SNPs and raw local samples) for streams
+		// QC does not update itself.
+		snpKeep := make([]bool, 0, qc.general.gwasParams.numSnps)
+		for _, geno := range qc.general.genoBlocks {
+			if f := geno.ColFilt(); f != nil {
+				snpKeep = append(snpKeep, f...)
+			} else {
+				snpKeep = append(snpKeep, OnesBool(int(geno.NumCols()))...)
+			}
+		}
+		qc.general.qcSnpKeep = snpKeep
+		qc.general.qcSampleKeep = indFilt
 	}
 }
 

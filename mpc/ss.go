@@ -144,6 +144,34 @@ func (mpcObj *MPC) SSToCMat(cryptoParams *crypto.CryptoParams, rm mpc_core.RMat)
 	return mpcObj.Network.AggregateCMat(cryptoParams, cm)
 }
 
+// SSToCMatBoosted is SSToCMat for a matrix whose ciphertexts will be multiplied with
+// other ciphertexts. It encrypts v·2^boostBits at the default scale Δ and relabels the
+// result as scale Δ·2^boostBits, so it still decrypts to v. CKKS noise (fresh
+// encryption, and the rescale rounding and key-switching noise of later operations) is
+// absolute in units of 1/scale, so it shrinks by 2^boostBits relative to v; with Δ =
+// 2^34 a fresh ciphertext otherwise carries ~1e-5 of absolute noise, which products with
+// large values (e.g. the intercept direction of an uncentered phenotype) amplify.
+// Products of boosted ciphertexts carry the extra scale along, and rescaling still
+// divides by one prime per multiplication, so no extra levels are used; consumers
+// must not assume scale ≈ Δ (CMatToSS and DecodeFloatVector use each ciphertext's own
+// scale). Party 0 gets the same dummy matrix as from SSToCMat.
+func (mpcObj *MPC) SSToCMatBoosted(cryptoParams *crypto.CryptoParams, rm mpc_core.RMat, boostBits int) crypto.CipherMatrix {
+	if boostBits < 0 || boostBits > 30 {
+		panic("SSToCMatBoosted: boostBits outside [0, 30]")
+	}
+	boosted := rm.Copy()
+	boosted.MulScalar(rm.Type().Zero().FromInt(1 << boostBits)) // exact: shares times a public integer
+	cm := mpcObj.SSToCMat(cryptoParams, boosted)
+	if mpcObj.GetPid() > 0 {
+		for i := range cm {
+			for _, ct := range cm[i] {
+				ct.SetScale(ct.Scale() * float64(uint64(1)<<boostBits))
+			}
+		}
+	}
+	return cm
+}
+
 func (mpcObj *MPC) SSToCVec(cryptoParams *crypto.CryptoParams, rv mpc_core.RVec) (cv crypto.CipherVector) {
 	return mpcObj.SSToCMat(cryptoParams, mpc_core.RMat{rv})[0]
 }

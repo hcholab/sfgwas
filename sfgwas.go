@@ -22,7 +22,7 @@ var PID, PID_ERR = strconv.Atoi(os.Getenv("PID"))
 var CONFIG_PATH = "config/" + getProtocol()
 
 func main() {
-	if CONFIG_PATH == "config/gwas" {
+	if CONFIG_PATH == "config/gwas" || CONFIG_PATH == "config/tractor" {
 		RunGWAS()
 	} else if CONFIG_PATH == "config/pca" {
 		RunPCA()
@@ -157,7 +157,7 @@ func getEnv(key, defaultValue string) string {
 
 func getProtocol() string {
 	switch proto := os.Getenv("PROTOCOL"); proto {
-	case "gwas", "pca":
+	case "gwas", "pca", "tractor":
 		return proto
 	case "":
 		return "gwas"

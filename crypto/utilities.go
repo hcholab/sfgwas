@@ -2,9 +2,13 @@ package crypto
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
+	"strings"
 	"unsafe"
 
 	"go.dedis.ch/onet/v3/log"
@@ -79,7 +83,57 @@ func UnmarshalCM(cryptoParams *CryptoParams, r, c int, sbytes, ctbytes []byte) C
 	return cm
 }
 
+// keyFingerprintSuffix names the sidecar file that records which joint secret key a
+// ciphertext cache was written under.
+const keyFingerprintSuffix = ".keyfp"
+
+// keyFingerprint returns cps.KeyFingerprint, or for a context built without
+// mpc.CollectiveInit (single-party tests) a fingerprint of its own secret key.
+func keyFingerprint(cps *CryptoParams) string {
+	if cps.KeyFingerprint != "" {
+		return cps.KeyFingerprint
+	}
+	if cps.Sk == nil {
+		log.Fatal("ciphertext cache: crypto parameters carry neither a key fingerprint nor a secret key")
+	}
+	data, err := cps.Sk.Value.MarshalBinary()
+	if err != nil {
+		log.Fatal(err)
+	}
+	h := sha256.Sum256(append([]byte("sfgwas/ckks-local-sk-fp/v1"), data...))
+	return hex.EncodeToString(h[:])
+}
+
+// CheckCipherCacheKey returns an error unless filename's key-fingerprint sidecar matches
+// the key in cps. Ciphertexts decrypt to garbage under any other key, silently, so a
+// cache without a matching sidecar (written by an older build, or before a key change)
+// is refused rather than used.
+func CheckCipherCacheKey(cps *CryptoParams, filename string) error {
+	want := keyFingerprint(cps)
+	data, err := os.ReadFile(filename + keyFingerprintSuffix)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("ciphertext cache %s has no key fingerprint (%s%s); it predates key "+
+			"fingerprinting or was copied without it, and may be encrypted under a different CKKS key. "+
+			"Delete it (or disable the use_cached_* option) to recompute", filename, filename, keyFingerprintSuffix)
+	} else if err != nil {
+		return err
+	}
+	if got := strings.TrimSpace(string(data)); got != want {
+		return fmt.Errorf("ciphertext cache %s was written under a different CKKS key "+
+			"(cache key %.16s..., current key %.16s...): the joint key changed (a party's seed was "+
+			"regenerated, ckks_fresh_keys was set, or the cache comes from another deployment). "+
+			"Delete the cache (or disable the use_cached_* option) to recompute", filename, got, want)
+	}
+	return nil
+}
+
+// SaveCipherMatrixToFile writes cm to filename, plus a sidecar recording the key
+// fingerprint that LoadCipherMatrixFromFile checks.
 func SaveCipherMatrixToFile(cps *CryptoParams, cm CipherMatrix, filename string) {
+	if err := os.WriteFile(filename+keyFingerprintSuffix, []byte(keyFingerprint(cps)+"\n"), 0644); err != nil {
+		log.Fatal(err)
+	}
+
 	file, err := os.Create(filename)
 	if err != nil {
 		log.Fatal(err)
@@ -110,7 +164,13 @@ func SaveCipherMatrixToFile(cps *CryptoParams, cm CipherMatrix, filename string)
 	writer.Flush()
 }
 
+// LoadCipherMatrixFromFile reads a cache written by SaveCipherMatrixToFile. It refuses
+// (log.Fatal) a cache whose key fingerprint does not match cps.
 func LoadCipherMatrixFromFile(cps *CryptoParams, filename string) CipherMatrix {
+	if err := CheckCipherCacheKey(cps, filename); err != nil {
+		log.Fatal(err)
+	}
+
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatal(err)

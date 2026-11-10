@@ -57,6 +57,11 @@ type CryptoParams struct {
 
 	numThreads int
 	prec       uint
+
+	// KeyFingerprint identifies the joint secret key these parameters encrypt under
+	// (hex SHA-256, set by mpc.CollectiveInit). Ciphertext caches record it and refuse
+	// to load under a different key; see SaveCipherMatrixToFile.
+	KeyFingerprint string
 }
 
 // CryptoParamsForNetwork stores all crypto info to save to file
@@ -667,7 +672,7 @@ func (cv *CipherVector) DummyBootstrapping(serverID string, cryptoParams *Crypto
 var _ encoding.BinaryMarshaler = new(CryptoParams)
 var _ encoding.BinaryUnmarshaler = new(CryptoParams)
 
-//MarshalBinary for minimal cryptoParams-keys + params
+// MarshalBinary for minimal cryptoParams-keys + params
 func (cp *CryptoParams) MarshalBinary() ([]byte, error) {
 	var ret bytes.Buffer
 	encoder := gob.NewEncoder(&ret)

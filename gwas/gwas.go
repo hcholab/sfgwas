@@ -32,6 +32,18 @@ type ProtocolInfo struct {
 	cov            *mat.Dense
 	pos            []uint64
 
+	// Tractor: ancestry-partitioned genotype dosage, loaded only when UseTractorPhase3
+	genoBlocksA   []*GenoFileStream
+	genoBlocksAMR []*GenoFileStream
+	genoBlocksEUR []*GenoFileStream
+
+	// Filters chosen by QC (Phase1), recorded so they can be applied to streams QC does
+	// not touch (the Tractor ancestry streams). qcSnpKeep is over the full, pre-QC SNP
+	// list (all blocks); qcSampleKeep is over this party's local samples. nil = keep all.
+	qcSnpKeep        []bool
+	qcSampleKeep     []bool
+	tractorQCApplied bool
+
 	gwasParams *GWASParams
 
 	config *Config
@@ -82,11 +94,36 @@ type Config struct {
 
 	SharedKeysPath string `toml:"shared_keys_path"`
 
+	// CKKS secret-key shard persistence (data parties only; see mpc.KeyOptions).
+	// ckks_sk_seed_file defaults to <cache_dir>/ckks_sk_seed.bin; the file holds this
+	// party's secret seed (mode 0600) and is reused across runs so ciphertext caches
+	// stay decryptable. ckks_fresh_keys = true replaces it with a new random seed.
+	CkksSkSeedFile string `toml:"ckks_sk_seed_file"`
+	CkksFreshKeys  bool   `toml:"ckks_fresh_keys"`
+
 	GenoFileFormat string `toml:"geno_file_format"`        // 'blocks' or 'pgen'
 	GenoFilePrefix string `toml:"geno_binary_file_prefix"` // If 'pgen' expects a '%d' placeholder for chrom, e.g. "ukb_imp_chr%d_v3" (.pgen/.psam/.pvar)
 
 	GenoNumBlocks     int    `toml:"geno_num_blocks"`
 	GenoBlockSizeFile string `toml:"geno_block_size_file"`
+
+	// Tractor: ancestry-partitioned genotype dosage, one "blocks"-format file set per
+	// stream (same "<prefix>.<block>.bin" convention as GenoFilePrefix, same blocks and
+	// sample order as the genotype data; QC's SNP and sample filters are applied to them).
+	// A = local ancestry dosage (AMR haplotype count), AMR/EUR = ancestry-specific allele
+	// dosage; negative entries are missing calls, imputed as 0.
+	//
+	// tractor_count_threshold: minimum for each of the six ancestry-specific counts
+	// (AMR/EUR haplotypes, alt/ref alleles on each); <= 0 disables the filter.
+	// tractor_det_tol: minimum det(S) of the 3x3 covariate-adjusted Gram matrix of
+	// (A, X_AMR, X_EUR), in raw units (det grows like n^3). Both have the meaning of
+	// count_threshold and det_tol in the reference notebook (tractor.ipynb: 20, 1e-6).
+	UseTractorPhase3      bool    `toml:"use_tractor_phase_3"`
+	TractorGenoPrefixA    string  `toml:"tractor_geno_prefix_a"`
+	TractorGenoPrefixAMR  string  `toml:"tractor_geno_prefix_amr"`
+	TractorGenoPrefixEUR  string  `toml:"tractor_geno_prefix_eur"`
+	TractorCountThreshold int     `toml:"tractor_count_threshold"`
+	TractorDetTol         float64 `toml:"tractor_det_tol"`
 
 	PhenoFile  string `toml:"pheno_file"`
 	CovFile    string `toml:"covar_file"`
@@ -209,13 +246,14 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 
 	var cps *crypto.CryptoParams
 	if !mpcOnly {
-		cps = networks.CollectiveInit(params, prec)
+		cps = networks.CollectiveInit(params, prec, mpc.NewKeyOptions(config.CkksSkSeedFile, config.CacheDir, config.CkksFreshKeys))
 	}
 
 	var pheno, cov *mat.Dense
 	var pos []uint64
 	var genofs []*GenoFileStream
 	var genoBlockSizes []int
+	var genofsA, genofsAMR, genofsEUR []*GenoFileStream
 
 	isPgen := config.GenoFileFormat == "pgen"
 
@@ -266,11 +304,39 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 			}
 		}
 
+		if config.UseTractorPhase3 {
+			openTractorStream := func(prefix string) []*GenoFileStream {
+				streams := make([]*GenoFileStream, config.GenoNumBlocks)
+				for i := range streams {
+					filename := fmt.Sprintf("%s.%d.bin", prefix, i)
+					log.LLvl1(time.Now().Format(time.RFC3339), "Opening Tractor geno file:", filename)
+					want := int64(config.NumInds[pid]) * int64(genoBlockSizes[i])
+					if info, err := os.Stat(filename); err != nil {
+						log.Fatalf("Tractor geno file %s: %v", filename, err)
+					} else if info.Size() != want {
+						log.Fatalf("Tractor geno file %s has %d bytes, expected num_inds[%d] x block size = %d x %d = %d",
+							filename, info.Size(), pid, config.NumInds[pid], genoBlockSizes[i], want)
+					}
+					streams[i] = NewGenoFileStream(filename, uint64(config.NumInds[pid]), uint64(genoBlockSizes[i]), false)
+				}
+				return streams
+			}
+			genofsA = openTractorStream(config.TractorGenoPrefixA)
+			// (each stream must hold num_inds[pid] rows by the block's SNP count; checked in openTractorStream)
+			genofsAMR = openTractorStream(config.TractorGenoPrefixAMR)
+			genofsEUR = openTractorStream(config.TractorGenoPrefixEUR)
+		}
+
 		tab := '\t'
 		pheno = LoadMatrixFromFile(config.PhenoFile, tab)
 		cov = LoadMatrixFromFile(config.CovFile, tab)
 		pos = LoadSNPPositionFile(config.SnpPosFile, tab)
 		log.LLvl1(time.Now().Format(time.RFC3339), "First few SNP positions:", pos[:5])
+	}
+
+	if config.UseTractorPhase3 && isPgen && !config.UsePrecomputedGenoCount && (!config.SkipQC || config.UseCachedQC) {
+		log.Fatal("Tractor with geno_file_format = \"pgen\" supports QC only with use_precomputed_geno_count = true " +
+			"(the other QC path reads per-block genotype files); set it, or skip_qc = true")
 	}
 
 	gwasParams := InitGWASParams(config.NumInds, config.NumSnps, config.NumCovs, config.NumPCs, config.NumPheno, config.SnpDistThres)
@@ -284,6 +350,10 @@ func InitializeGWASProtocol(config *Config, pid int, mpcOnly bool) (gwasProt *Pr
 		pheno:          pheno,
 		cov:            cov,
 		pos:            pos,
+
+		genoBlocksA:   genofsA,
+		genoBlocksAMR: genofsAMR,
+		genoBlocksEUR: genofsEUR,
 
 		gwasParams: gwasParams,
 		config:     config,
@@ -377,15 +447,25 @@ func (g *ProtocolInfo) Phase2() (crypto.CipherMatrix, *mat.Dense) {
 
 	net.PrintNetworkLog()
 
+	// With zero PCs (the SkipPCA branch above, or a cached/computed run that legitimately
+	// found none), Qpca has no columns at all -- gonum's mat.NewDense refuses a
+	// zero-length dimension, so neither the save below nor a dummy (0, 1) placeholder can
+	// be constructed. Skip the save/reload round trip entirely in that case; QpcaPlain
+	// stays nil, which InitAssociationTestsPlainMult treats as "no PCs" rather than an
+	// error only when NumPCs is actually 0.
 	outFile := g.OutPath("pca.txt")
-	for p := 1; p <= g.config.NumMainParties; p++ {
-		SaveMatrixToFile(g.cps, g.mpcObj[0], Qpca, g.gwasParams.numFiltInds[p], p, outFile)
+	if g.config.NumPCs > 0 {
+		for p := 1; p <= g.config.NumMainParties; p++ {
+			SaveMatrixToFile(g.cps, g.mpcObj[0], Qpca, g.gwasParams.numFiltInds[p], p, outFile)
+		}
 	}
 
 	var QpcaPlain *mat.Dense
 	if QpcaPlainDense != nil {
 		// Cached-PCA path: already have it in memory (see above), no disk round-trip.
 		QpcaPlain = QpcaPlainDense
+	} else if g.config.NumPCs == 0 {
+		QpcaPlain = nil
 	} else if pid > 0 {
 		// Freshly-computed-PCA path: never had a plaintext copy in memory (Qpca came
 		// straight out of PopulationStratification encrypted), so this read is the
@@ -397,6 +477,83 @@ func (g *ProtocolInfo) Phase2() (crypto.CipherMatrix, *mat.Dense) {
 	}
 
 	return Qpca, QpcaPlain
+}
+
+// TractorPhase3 is Phase3's Tractor counterpart: same PCA input, but the output shape
+// (multiple revealed plaintext quantities per phenotype rather than one CipherMatrix)
+// doesn't fit ComputeAssocStatistics's interface, so it's a parallel entry point rather
+// than another branch inside it. Applies QC's SNP and sample filters to the ancestry
+// streams, then writes out/party*/tractor_<pheno>.txt (one row per kept SNP; see
+// SaveTractorResultToFile) and tractor_snp_index.txt (each row's global SNP index).
+func (g *ProtocolInfo) TractorPhase3(QpcaPlain *mat.Dense) {
+	net := g.mpcObj.GetNetworks()
+	net.ResetNetworkLog()
+
+	log.LLvl1(time.Now().Format(time.RFC3339), "sfkit: Starting Tractor Association Tests")
+
+	g.applyQCToTractorStreams()
+
+	assocTest := g.InitAssociationTestsPlainMult(QpcaPlain)
+	revealed, snpIndex := assocTest.GetTractorStatsPlainMult()
+
+	log.LLvl1(time.Now().Format(time.RFC3339), "Finished Tractor association tests")
+
+	net.PrintNetworkLog()
+
+	if g.mpcObj[0].GetPid() > 0 {
+		result := TractorFinishFromRevealed(revealed, g.config.TractorCountThreshold, g.config.TractorDetTol)
+
+		for k := range revealed.T {
+			outFile := g.OutPath(fmt.Sprintf("tractor_%d.txt", k))
+			SaveTractorResultToFile(outFile, result, k)
+		}
+		SaveTractorSNPIndexFile(g.OutPath("tractor_snp_index.txt"), snpIndex)
+		log.LLvl1(time.Now().Format(time.RFC3339), "Tractor output written:", len(snpIndex), "SNPs,",
+			SumBool(result.Valid), "valid (det_tol", g.config.TractorDetTol, "count_threshold", g.config.TractorCountThreshold, ")")
+	}
+}
+
+// applyQCToTractorStreams applies the SNP and sample filters QC chose for the main
+// genotype data to the three Tractor ancestry streams, which QC never reads. The streams
+// must list the same SNPs (same block layout) and samples (same order) as the genotype
+// data.
+func (g *ProtocolInfo) applyQCToTractorStreams() {
+	if g.mpcObj[0].GetPid() == 0 || g.tractorQCApplied {
+		return
+	}
+	g.tractorQCApplied = true
+
+	if g.qcSnpKeep != nil && len(g.qcSnpKeep) != g.config.NumSnps {
+		log.Fatalf("Tractor: QC SNP filter has %d entries, expected num_snps = %d", len(g.qcSnpKeep), g.config.NumSnps)
+	}
+	pid := g.mpcObj[0].GetPid()
+	if g.qcSampleKeep != nil && len(g.qcSampleKeep) != g.config.NumInds[pid] {
+		log.Fatalf("Tractor: QC sample filter has %d entries, expected num_inds[%d] = %d", len(g.qcSampleKeep), pid, g.config.NumInds[pid])
+	}
+
+	shift := 0
+	for b := range g.genoBlocksA {
+		size := g.genoBlockSizes[b]
+		for _, gfs := range []*GenoFileStream{g.genoBlocksA[b], g.genoBlocksAMR[b], g.genoBlocksEUR[b]} {
+			if g.qcSampleKeep != nil {
+				gfs.UpdateRowFilt(g.qcSampleKeep)
+			}
+			if g.qcSnpKeep != nil {
+				gfs.UpdateColFilt(g.qcSnpKeep[shift : shift+size])
+			}
+		}
+		shift += size
+	}
+	if g.qcSnpKeep != nil || g.qcSampleKeep != nil {
+		nsnp, nind := g.config.NumSnps, g.config.NumInds[pid]
+		if g.qcSnpKeep != nil {
+			nsnp = SumBool(g.qcSnpKeep)
+		}
+		if g.qcSampleKeep != nil {
+			nind = SumBool(g.qcSampleKeep)
+		}
+		log.LLvl1(time.Now().Format(time.RFC3339), "Tractor: QC filters applied to ancestry streams:", nsnp, "SNPs,", nind, "local samples")
+	}
 }
 
 func (g *ProtocolInfo) Phase3(Qpca crypto.CipherMatrix, QpcaPlain *mat.Dense) {
@@ -447,7 +604,11 @@ func (g *ProtocolInfo) GWAS() {
 	} else {
 		g.Phase1()
 		Qpc, QpcPlain := g.Phase2()
-		g.Phase3(Qpc, QpcPlain)
+		if g.config.UseTractorPhase3 {
+			g.TractorPhase3(QpcPlain)
+		} else {
+			g.Phase3(Qpc, QpcPlain)
+		}
 	}
 }
 

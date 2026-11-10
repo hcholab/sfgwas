@@ -44,6 +44,10 @@ type Config struct {
 
 	SharedKeysPath string `toml:"shared_keys_path"`
 
+	// CKKS secret-key shard persistence; same meaning as in the gwas config.
+	CkksSkSeedFile string `toml:"ckks_sk_seed_file"`
+	CkksFreshKeys  bool   `toml:"ckks_fresh_keys"`
+
 	InputFile string `toml:"input_file"` // for pca
 
 	OutDir   string `toml:"output_dir"`
@@ -119,7 +123,7 @@ func InitializePCAProtocol(config *Config, pid int, mpcOnly bool) (pcaProt *Prot
 
 	var cps *crypto.CryptoParams
 	if !mpcOnly {
-		cps = networks.CollectiveInit(params, prec)
+		cps = networks.CollectiveInit(params, prec, mpc.NewKeyOptions(config.CkksSkSeedFile, config.CacheDir, config.CkksFreshKeys))
 	}
 
 	return &ProtocolInfo{

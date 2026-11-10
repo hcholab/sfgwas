@@ -54,12 +54,8 @@ import (
 //
 //	./compare_assoc_paths.sh && go test ./tests/e2e_tests/ -run TestAssocPlink2Oracle -v
 func TestAssocPlink2Oracle(t *testing.T) {
-	root := repoRoot(t)
-	if err := os.Chdir(root); err != nil { // FilterMatrixFilePgen shells out via a relative path
-		t.Fatalf("chdir %s: %v", root, err)
-	}
-
-	global := loadConfig(t, "config/gwas/configGlobal.toml", nil)
+	cfgDir := gwasConfigDir(t) // SFGWAS_GWAS_CONFIG_DIR overrides config/gwas
+	global := loadConfig(t, filepath.Join(cfgDir, "configGlobal.toml"), nil)
 	if !strings.EqualFold(global.GenoFileFormat, "pgen") {
 		t.Skipf("oracle only implements the pgen input path; config says %q", global.GenoFileFormat)
 	}
@@ -70,7 +66,7 @@ func TestAssocPlink2Oracle(t *testing.T) {
 	nparty := global.NumMainParties
 	cfgs := make([]*gwas.Config, nparty+1)
 	for p := 1; p <= nparty; p++ {
-		cfgs[p] = loadConfig(t, fmt.Sprintf("config/gwas/configLocal.Party%d.toml", p), global)
+		cfgs[p] = loadConfig(t, filepath.Join(cfgDir, fmt.Sprintf("configLocal.Party%d.toml", p)), global)
 	}
 
 	assocProbe := filepath.Join(cfgs[1].OutDir, "assoc_0.txt")

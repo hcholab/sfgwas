@@ -11,38 +11,41 @@ import (
 	"github.com/hhcho/frand"
 	"github.com/ldsec/lattigo/v2/dckks"
 	"github.com/ldsec/lattigo/v2/ring"
-	"github.com/ldsec/lattigo/v2/utils"
 	"go.dedis.ch/onet/v3/log"
 
 	"github.com/ldsec/lattigo/v2/ckks"
 )
 
-func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint) (cps *crypto.CryptoParams) {
+// CollectiveInit generates the collective CKKS keys. Each data party's secret-key shard
+// comes from its own secret seed (see KeyOptions); party 0 holds a zero shard. The
+// common reference polynomials are re-randomized every run with a jointly chosen nonce
+// (see keySetupExchange for why that matters once shards are persisted), and the
+// returned CryptoParams carry a fingerprint of the joint secret key, which ciphertext
+// caches record and check (crypto.SaveCipherMatrixToFile / LoadCipherMatrixFromFile).
+func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint, keyOpts KeyOptions) (cps *crypto.CryptoParams) {
 	log.LLvl1("CollectiveInit started")
 
 	dckksContext := dckks.NewContext(params)
-
-	var kgen = ckks.NewKeyGenerator(params)
+	pid := netObj[0].GetPid()
 
 	var skShard *ckks.SecretKey
-	if netObj[0].GetPid() == 0 {
+	keyStatus := ""
+	if pid == 0 {
 		skShard = new(ckks.SecretKey)
 		skShard.Value = dckksContext.RingQP.NewPoly()
 	} else {
-		skShard = kgen.GenSecretKey()
-
-		skShard.Value.Zero()
-		seed := []byte{42, byte(netObj[0].GetPid())}
-		prng, err := utils.NewKeyedPRNG(seed)
+		seed, status, err := loadOrCreateSkSeed(keyOpts)
 		if err != nil {
-			panic(err)
+			log.Fatal("CKKS key setup: ", err)
 		}
-		ternarySamplerMontgomery := ring.NewTernarySampler(prng, dckksContext.RingQP, 1.0/3.0, true)
-		skShard.Value = ternarySamplerMontgomery.ReadNew()
-		dckksContext.RingQP.NTT(skShard.Value, skShard.Value)
+		skShard = deriveSkShard(params, dckksContext, seed)
+		keyStatus = status
 	}
 
-	// Globally shared random generator
+	runNonce, jointFP := keySetupExchange(netObj[0], skShard)
+	logKeySetup(pid, keyStatus, jointFP)
+
+	// Common reference polynomials: shared global PRG output, re-randomized per run.
 	crpGen := make([]*ring.UniformSampler, len(netObj))
 	for i := range crpGen {
 		seed := make([]byte, chacha.KeySize)
@@ -50,7 +53,7 @@ func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint
 		netObj[0].Rand.RandRead(seed)
 		netObj[0].Rand.RestorePRG()
 
-		seedPrng := frand.NewCustom(seed, bufferSize, 20)
+		seedPrng := frand.NewCustom(crpSeed(seed, runNonce, chacha.KeySize), bufferSize, 20)
 
 		crpGen[i] = ring.NewUniformSamplerWithBasePrng(seedPrng, dckksContext.RingQP)
 	}
@@ -63,6 +66,7 @@ func (netObj ParallelNetworks) CollectiveInit(params *ckks.Parameters, prec uint
 
 	nprocs := runtime.GOMAXPROCS(0)
 	cps = crypto.NewCryptoParams(params, skShard, skShard, pk, rlk, prec, nprocs)
+	cps.KeyFingerprint = jointFP
 
 	smallDim := 20
 	log.LLvl1("RotKeyGen: shifts <=", smallDim, "and powers of two up to", cps.GetSlots())

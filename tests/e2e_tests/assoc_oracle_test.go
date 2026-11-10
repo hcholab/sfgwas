@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -34,6 +35,8 @@ import (
 // Prerequisites are the same as the pipeline's: plink2 and python3 on PATH.
 //
 //	./compare_assoc_paths.sh && go test ./tests/e2e_tests/ -run TestAssocPlaintextOracle -v
+//
+// SFGWAS_GWAS_CONFIG_DIR=<run>/config/gwas checks a run made elsewhere (see gwasConfigDir).
 func TestAssocPlaintextOracle(t *testing.T) {
 	runAssocPlaintextOracle(t, "", func(t *testing.T, Z *mat.Dense, ntot int, dumpDir string) *mat.Dense {
 		return testutil.GramSchmidt(Z)
@@ -104,12 +107,8 @@ func denseRows(m *mat.Dense) [][]float64 {
 // filePrefix (e.g. "" or "cholesky_") namespaces the SFGWAS_ORACLE_DUMP output so
 // two variants can dump to the same directory without overwriting each other.
 func runAssocPlaintextOracle(t *testing.T, filePrefix string, computeQ func(t *testing.T, Z *mat.Dense, ntot int, dumpDir string) *mat.Dense) {
-	root := repoRoot(t)
-	if err := os.Chdir(root); err != nil { // FilterMatrixFilePgen shells out via a relative path
-		t.Fatalf("chdir %s: %v", root, err)
-	}
-
-	global := loadConfig(t, "config/gwas/configGlobal.toml", nil)
+	cfgDir := gwasConfigDir(t)
+	global := loadConfig(t, filepath.Join(cfgDir, "configGlobal.toml"), nil)
 	if !strings.EqualFold(global.GenoFileFormat, "pgen") {
 		t.Skipf("oracle only implements the pgen input path; config says %q", global.GenoFileFormat)
 	}
@@ -120,7 +119,7 @@ func runAssocPlaintextOracle(t *testing.T, filePrefix string, computeQ func(t *t
 	nparty := global.NumMainParties
 	cfgs := make([]*gwas.Config, nparty+1)
 	for p := 1; p <= nparty; p++ {
-		cfgs[p] = loadConfig(t, fmt.Sprintf("config/gwas/configLocal.Party%d.toml", p), global)
+		cfgs[p] = loadConfig(t, filepath.Join(cfgDir, fmt.Sprintf("configLocal.Party%d.toml", p)), global)
 	}
 
 	// Must check party 1's OWN configured OutDir, not a hardcoded "out/party1": that
@@ -463,6 +462,51 @@ func loadConfig(t *testing.T, path string, base *gwas.Config) *gwas.Config {
 		t.Fatalf("decode %s: %v", path, err)
 	}
 	return cfg
+}
+
+// gwasConfigDir returns the directory holding the run's configGlobal.toml and
+// configLocal.Party*.toml, and changes into the directory the run was started from, so
+// relative paths in the config resolve as they did for the protocol (and
+// FilterMatrixFilePgen finds scripts/ there). It defaults to config/gwas under the
+// repository root. SFGWAS_GWAS_CONFIG_DIR overrides it, e.g. to check a scratch run;
+// the run directory is then two levels above it, since sfgwas reads config/<protocol>/
+// relative to its working directory.
+func gwasConfigDir(t *testing.T) string {
+	t.Helper()
+	cfgDir := gwasConfigOverride()
+	var runDir string
+	if cfgDir != "" {
+		runDir = filepath.Dir(filepath.Dir(cfgDir))
+	} else {
+		runDir = repoRoot(t)
+		cfgDir = filepath.Join(runDir, "config", "gwas")
+	}
+	if err := os.Chdir(runDir); err != nil { // FilterMatrixFilePgen shells out via a relative path
+		t.Fatalf("chdir %s: %v", runDir, err)
+	}
+	t.Logf("config %s, run directory %s", cfgDir, runDir)
+	return cfgDir
+}
+
+var (
+	gwasConfigOverrideOnce sync.Once
+	gwasConfigOverrideAbs  string
+)
+
+// gwasConfigOverride returns SFGWAS_GWAS_CONFIG_DIR as an absolute path, resolved once,
+// before any test changes directory (a relative value is relative to the package
+// directory `go test` starts in).
+func gwasConfigOverride() string {
+	gwasConfigOverrideOnce.Do(func() {
+		if d := os.Getenv("SFGWAS_GWAS_CONFIG_DIR"); d != "" {
+			abs, err := filepath.Abs(d)
+			if err != nil {
+				panic(err)
+			}
+			gwasConfigOverrideAbs = abs
+		}
+	})
+	return gwasConfigOverrideAbs
 }
 
 func repoRoot(t *testing.T) string {

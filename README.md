@@ -106,6 +106,8 @@ We provide both variant information files and the genotype counts for the exampl
 
 Example config files are provided in `config/`. There are both global config parameters shared by all parties and party-specific parameters.
 
+**CKKS keys.** Each data party derives its share of the collective CKKS secret key from a random 32-byte seed stored (mode 0600) at `<cache_dir>/ckks_sk_seed.bin`, or at `ckks_sk_seed_file` if set. The seed is created on first use and reused by later runs, so ciphertext caches (e.g. `use_cached_combined_q`) stay decryptable; keep it private. `ckks_fresh_keys = true` replaces it with a new seed. Every ciphertext cache records the joint key it was written under (a `.keyfp` file next to it) and is refused under any other key.
+
 ### Running the program
 
 An example script `run_example.sh` shows how to run SF-GWAS.
@@ -117,6 +119,14 @@ We also provide `stop.sh` for terminating the jobs launched by `run_example.sh`.
 ### Output
 
 Once SF-GWAS finishes, it generates `assoc.txt` in the output directory specified in the configuration. This file includes the Pearson correlation coefficient for each variant passing the quality control filters. Binary vector indicating the inclusion of each variant in the final output is specified in `gkeep.txt` in the cache directory.
+
+### Tractor (local-ancestry association)
+
+`PROTOCOL=tractor` reads `config/tractor/` and, after QC and PCA, fits `y ~ Z + A + X_AMR + X_EUR` per SNP (Tractor's model; A = AMR haplotype count, X_AMR/X_EUR = ancestry-specific alternate-allele dosages) when `use_tractor_phase_3 = true`. The three dosage streams are given as "blocks"-format files (`tractor_geno_prefix_a/_amr/_eur` + `.<block>.bin`, same block layout and sample order as the genotype data); QC's SNP and sample filters are applied to them, and missing calls (negative entries) are imputed as 0. `tractor_count_threshold` and `tractor_det_tol` have the meaning of `count_threshold` and `det_tol` in `tractor.ipynb` (det in raw units).
+
+Output, per data party: `tractor_<k>.txt` for phenotype k, one tab-separated row per tested SNP (`beta_A se_A p_A beta_AMR se_AMR p_AMR beta_EUR se_EUR p_EUR valid`; statistics are NaN where `valid` is false), and `tractor_snp_index.txt`, the 0-based global index of each row's SNP. The protocol reveals det of the normalized 3x3 design matrix and the aggregate dosage counts for every SNP, and the remaining sufficient statistics only for SNPs that pass the det/count filter (see `gwas/tractor.go`).
+
+`scripts/run_tractor_scenarios.sh` generates synthetic scenarios (`scripts/gen_tractor_fixture`), runs the three parties, and checks each run against a plaintext oracle (`TestTractorOracle`, which accepts any run directory through `SFGWAS_TRACTOR_RUN_DIR`) and the reference notebook (`scripts/compare_tractor_notebook.py`).
 
 ## Contact for questions
 

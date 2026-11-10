@@ -88,7 +88,10 @@ func (g *ProtocolInfo) InitAssociationTestsPlainMult(QpcPlain *mat.Dense) *Assoc
 	}
 	gwasParams.SetNumPheno(npheno)
 
-	if pid > 0 && QpcPlain == nil {
+	// QpcPlain is only required when there are actually PCs to consume -- with npc==0
+	// (PCA skipped or genuinely found no PCs) Phase2 leaves it nil rather than
+	// constructing a zero-row *mat.Dense, which gonum's mat.NewDense can't represent.
+	if pid > 0 && QpcPlain == nil && npc > 0 {
 		log.Fatal("Plaintext Qpca has not been provided")
 	}
 
@@ -105,22 +108,30 @@ func (g *ProtocolInfo) InitAssociationTestsPlainMult(QpcPlain *mat.Dense) *Assoc
 
 		_, phenoCols := phenoPlain.Dims()
 		covRows, covCols := covPlain.Dims()
-		qpcRows, qpcCols := QpcPlain.Dims()
 
 		if covRows != ncov {
 			log.Fatalf("covPlain has %d rows; expected ncov=%d", covRows, ncov)
 		}
 
-		if qpcRows != npc {
-			log.Fatalf("QpcPlain has %d rows; expected npc=%d", qpcRows, npc)
-		}
+		if npc > 0 {
+			qpcRows, qpcCols := QpcPlain.Dims()
 
-		if qpcCols != nsample || covCols != nsample || phenoCols != nsample {
-			log.Fatalf("Inconsistent local sample count (expected %d; Qpc %d, cov %d, pheno %d)", nsample, qpcCols, covCols, phenoCols)
-		}
+			if qpcRows != npc {
+				log.Fatalf("QpcPlain has %d rows; expected npc=%d", qpcRows, npc)
+			}
 
-		covPcPlain = mat.NewDense(ncov+npc, nsample, nil)
-		covPcPlain.Stack(covPlain, QpcPlain)
+			if qpcCols != nsample || covCols != nsample || phenoCols != nsample {
+				log.Fatalf("Inconsistent local sample count (expected %d; Qpc %d, cov %d, pheno %d)", nsample, qpcCols, covCols, phenoCols)
+			}
+
+			covPcPlain = mat.NewDense(ncov+npc, nsample, nil)
+			covPcPlain.Stack(covPlain, QpcPlain)
+		} else {
+			if covCols != nsample || phenoCols != nsample {
+				log.Fatalf("Inconsistent local sample count (expected %d; cov %d, pheno %d)", nsample, covCols, phenoCols)
+			}
+			covPcPlain = covPlain
+		}
 
 	} else {
 		phenoPlain = mat.NewDense(npheno, 1, nil)
@@ -985,7 +996,12 @@ type covOrthoHighPrec struct {
 //     eigenvalue can carry several percent of run-dependent error from the iterative
 //     shifted-QR algorithm on an ill-conditioned covariate matrix (see EigenDecomp's doc
 //     comment) — useful for comparing against Cholesky on suspect input.
-func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.CryptoParams, ZtZss mpc_core.RMat, scaling mpc_core.RElem, hiPrec *covOrthoHighPrec, numThreads int) covOrthoFactor {
+//
+// ctBoostBits > 0 encrypts the ciphertext form of S (used by applyCT/applyCTAdditive)
+// with mpc.SSToCMatBoosted, i.e. at scale Δ·2^ctBoostBits, so B = S·A carries 2^ctBoostBits
+// less relative CKKS noise and a scale of about Δ·2^ctBoostBits (the eigendecomposition
+// branch boosts Vᵀ only). 0 keeps the historical scale.
+func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.CryptoParams, ZtZss mpc_core.RMat, scaling mpc_core.RElem, hiPrec *covOrthoHighPrec, numThreads int, ctBoostBits int) covOrthoFactor {
 	mpcObj := ast.general.mpcObj[0]
 	dataBits := mpcObj.GetDataBits()
 	fracBits := mpcObj.GetFracBits()
@@ -1059,7 +1075,7 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 		// }
 		// ###################
 
-		Sct := mpcObj.SSToCMat(cryptoParams, Sss)
+		Sct := mpcObj.SSToCMatBoosted(cryptoParams, Sss, ctBoostBits)
 
 		// Sct is the ciphertext conversion of Sss actually used by applyCT (unlike
 		// cholesky_S.txt, which reveals Sss directly via the SS-domain RevealSymMat path
@@ -1172,12 +1188,21 @@ func (ast *AssocTestPlainMult) computeCovOrthoFactor(cryptoParams *crypto.Crypto
 	}
 
 	// Ciphertext counterparts for applyCT, mirroring the secret-shared ones above.
-	Vt := mpcObj.SSToCMat(cryptoParams, Vtss)
-	LsqrtInv := crypto.CZeros(cryptoParams, len(LsqrtInvss)) // one ciphertext per eigenvalue
-	for i := range LsqrtInv {
-		LsqrtInv[i] = mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{LsqrtInvss[i]})
-		if mpcObj.GetPid() > 0 { // no share on party 0; SStoCiphertext left it nil
-			LsqrtInv[i] = crypto.InnerSumAll(cryptoParams, crypto.CipherVector{LsqrtInv[i]})
+	Vt := mpcObj.SSToCMatBoosted(cryptoParams, Vtss, ctBoostBits)
+	// One ciphertext per eigenvalue, the value in every slot: the share is replicated in
+	// the secret-shared domain before conversion (replicating with InnerSumAll after
+	// encrypting into slot 0 would sum the encryption noise of all slots onto it).
+	LsqrtInv := make(crypto.CipherVector, len(LsqrtInvss))
+	repL := mpc_core.InitRMat(rtype.Zero(), len(LsqrtInvss), cryptoParams.GetSlots())
+	for i := range repL {
+		for j := range repL[i] {
+			repL[i][j] = LsqrtInvss[i].Copy()
+		}
+	}
+	repLct := mpcObj.SSToCMat(cryptoParams, repL)
+	if mpcObj.GetPid() > 0 { // party 0 gets a dummy matrix from SSToCMat
+		for i := range LsqrtInv {
+			LsqrtInv[i] = repLct[i][0]
 		}
 	}
 
@@ -1322,7 +1347,7 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 		SaveFloatMatrixToFileRowMajor(ast.general.CachePath("ZtZ.txt"), ZtZr)
 	}
 
-	covOrtho := ast.computeCovOrthoFactor(cryptoParams, ZtZss, scaling, hiPrec, numThreads)
+	covOrtho := ast.computeCovOrthoFactor(cryptoParams, ZtZss, scaling, hiPrec, numThreads, 0)
 
 	ZtZss = nil
 
@@ -1449,75 +1474,79 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 					}
 				}
 
-				matOutEnc, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, matOut)
-				matOutEnc = mpcObj.Network.AggregateCMat(cryptoParams, matOutEnc)
-
-				numCtx = len(matOutEnc[0])
-
-				ZtXscaled := matOutEnc[:ncov]
-				YtX := matOutEnc[ncov:]
-
-				OnetX, _ := crypto.EncryptFloatVector(cryptoParams, dosageSum)
-				OnetX = mpcObj.Network.AggregateCVec(cryptoParams, OnetX)
-
-				OnetXsq, _ := crypto.EncryptFloatVector(cryptoParams, dosageSqSum)
-				OnetXsq = mpcObj.Network.AggregateCVec(cryptoParams, OnetXsq)
-
-				if debug {
-					// Snapshot before the BtB-subtraction loop below mutates OnetXsq in
-					// place (evaluator.Sub writes into sxxBlocks[b][0], which IS OnetXsq).
-					xtxBlocks[b] = crypto.CipherMatrix{crypto.CopyEncryptedVector(OnetXsq)}
-				}
-
 				// Compute B = QᵀX = S * (ZᵀX)/sqrt(n)
 				// B := covOrtho.applyCT(ZtXscaled)
 				B := covOrtho.applyCTAdditive(matOut)
+				numCtx = len(B[0])
+
+				// Each "raw local sum - projection" below is formed in CKKS. The projection
+				// is a rescaled product (scale Δ·Δ'/q_i, off Δ by up to ~1e-4 relative), and
+				// Lattigo's Sub cannot reconcile such a near-1 scale ratio (see
+				// crypto.SameScaleTol), so each raw sum is encrypted directly at its
+				// projection's scale and level, and subtracted with the checked helper.
+				// In exact arithmetic the statistics are unchanged.
+				encryptAt := func(vals []float64, like *ckks.Ciphertext) crypto.CipherVector {
+					return crypto.EncryptFloatVectorAtScale(cryptoParams, vals, like.Scale(), like.Level())
+				}
 
 				if debug {
-					ztxBlocks[b] = ZtXscaled
+					ZtXscaled, _, _, _ := crypto.EncryptFloatMatrixRow(cryptoParams, matOut[:ncov])
+					ztxBlocks[b] = mpcObj.Network.AggregateCMat(cryptoParams, ZtXscaled)
 					qtxBlocks[b] = B
 				}
 
-				// Compute sx = 1ᵀ(I - QQᵀ)X
+				// Compute sx = 1ᵀ(I - QQᵀ)X (unreachable: covAllOnes is forced true above)
 				if covAllOnes {
 					sxBlocks[b] = crypto.CipherMatrix{crypto.CZeros(cryptoParams, numCtx)}
 					log.LLvl1(time.Now().Format(time.RFC3339), "sx set to zero")
 				} else {
 					tmp := CMultMatRowTimesRow(cryptoParams, crypto.CipherMatrix{OnetQ}, B, numThreads)
-					sxBlocks[b] = crypto.CipherMatrix{crypto.CSub(cryptoParams, OnetX, tmp[0])}
+					OnetX := mpcObj.Network.AggregateCVec(cryptoParams, encryptAt(dosageSum, tmp[0][0]))
+					sxBlocks[b] = crypto.CipherMatrix{crypto.CSubSameScale(cryptoParams, "sx = 1ᵀX - (1ᵀQ)B", OnetX, tmp[0])}
 				}
 
-				// Compute sxy = Yᵀ(I - QQᵀ)X
+				// Compute sxy = Yᵀ(I - QQᵀ)X = YᵀX - (YᵀQ)B
+				projY := CMultMatRowTimesRow(cryptoParams, YtQ, B, numThreads)
+				YtX := make(crypto.CipherMatrix, npheno)
+				for i := range YtX {
+					YtX[i] = encryptAt(matOut[ncov+i], projY[i][0])
+				}
+				YtX = mpcObj.Network.AggregateCMat(cryptoParams, YtX)
 				sxyBlocks[b] = make(crypto.CipherMatrix, npheno)
-				tmp := CMultMatRowTimesRow(cryptoParams, YtQ, B, numThreads)
 				for i := range sxyBlocks[b] {
-					sxyBlocks[b][i] = crypto.CSub(cryptoParams, YtX[i], tmp[i])
+					sxyBlocks[b][i] = crypto.CSubSameScale(cryptoParams, "sxy = YᵀX - (YᵀQ)B", YtX[i], projY[i])
 				}
 
 				log.LLvl1(time.Now().Format(time.RFC3339), "block", b+1, "/", numBlocks, "computed B, sx, sxy")
 
-				// Compute sxx = diag(XᵀX) - diag(BᵀB)
-				sxxBlocks[b] = crypto.CipherMatrix{OnetXsq}
+				// Compute sxx = diag(XᵀX) - diag(BᵀB): Σ_c B[c]⊙B[c] accumulated un-rescaled
+				// (all terms share one scale) and rescaled once, then subtracted from
+				// diag(XᵀX) encrypted at the result's scale.
+				projX := make(crypto.CipherVector, numCtx)
 				if err := cryptoParams.WithEvaluator(func(evaluator ckks.Evaluator) error {
-					for c := range B {
-						for j := range B[c] {
+					for j := 0; j < numCtx; j++ {
+						for c := range B {
+							crypto.MustSameScale("sxx: B ciphertexts", B[0][0], B[c][j])
 							tmp := evaluator.MulRelinNew(B[c][j], B[c][j])
-							// Not required for correctness: Lattigo's Sub auto-aligns mismatched
-							// scales (it upscales the lower-scale operand before subtracting), so
-							// omitting this would still decode correctly. Rescaling here instead
-							// keeps sxxBlocks at the codebase's canonical scale — matching every
-							// other ct*ct product (see CMultScalar, CMultConstRescale) — rather
-							// than leaving it elevated to Δ² for the rest of the pipeline.
-							if err := evaluator.Rescale(tmp, cryptoParams.Params.Scale(), tmp); err != nil {
-								return err
+							if projX[j] == nil {
+								projX[j] = tmp
+							} else {
+								evaluator.Add(projX[j], tmp, projX[j])
 							}
-							evaluator.Sub(sxxBlocks[b][0][j], tmp, sxxBlocks[b][0][j])
+						}
+						if err := evaluator.Rescale(projX[j], cryptoParams.Params.Scale(), projX[j]); err != nil {
+							return err
 						}
 					}
 					return nil
 				}); err != nil {
 					log.Fatalf("block %d: rescaling B^2 before sxx subtraction: %v", b+1, err)
 				}
+				OnetXsq := mpcObj.Network.AggregateCVec(cryptoParams, encryptAt(dosageSqSum, projX[0]))
+				if debug {
+					xtxBlocks[b] = crypto.CipherMatrix{crypto.CopyEncryptedVector(OnetXsq)}
+				}
+				sxxBlocks[b] = crypto.CipherMatrix{crypto.CSubSameScale(cryptoParams, "sxx = diag(XᵀX) - diag(BᵀB)", OnetXsq, projX)}
 
 				log.LLvl1(time.Now().Format(time.RFC3339), "block", b+1, "/", numBlocks, "computed sxx")
 
@@ -1578,10 +1607,10 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 				for i := range buffer {
 					buffer[i] = Ysum
 				}
-				OnetYloc, _ := crypto.EncryptFloatVector(cryptoParams, buffer)
-				OnetY := mpcObj.Network.AggregateCVec(cryptoParams, OnetYloc)
 				ct := crypto.InnerProd(cryptoParams, OnetQ, YtQ[i])
-				sy[i] = crypto.CSub(cryptoParams, OnetY, crypto.CipherVector{ct})
+				OnetYloc := crypto.EncryptFloatVectorAtScale(cryptoParams, buffer, ct.Scale(), ct.Level())
+				OnetY := mpcObj.Network.AggregateCVec(cryptoParams, OnetYloc)
+				sy[i] = crypto.CSubSameScale(cryptoParams, "sy = 1ᵀY - (1ᵀQ)(QᵀY)", OnetY, crypto.CipherVector{ct})
 			}
 		}
 
@@ -1594,10 +1623,11 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 			for j := range buffer {
 				buffer[j] = YsqSum
 			}
-			YtYloc, _ := crypto.EncryptFloatVector(cryptoParams, buffer)
-			YtY := mpcObj.Network.AggregateCVec(cryptoParams, YtYloc)
 			ct := crypto.InnerProd(cryptoParams, YtQ[i], YtQ[i]) // Check if masking is needed before InnerProd
-			syy[i] = crypto.CSub(cryptoParams, YtY, crypto.CipherVector{ct})
+			// YᵀY encrypted at the projection's scale: see the sxy comment above.
+			YtYloc := crypto.EncryptFloatVectorAtScale(cryptoParams, buffer, ct.Scale(), ct.Level())
+			YtY := mpcObj.Network.AggregateCVec(cryptoParams, YtYloc)
+			syy[i] = crypto.CSubSameScale(cryptoParams, "syy = YᵀY - (YᵀQ)(QᵀY)", YtY, crypto.CipherVector{ct})
 		}
 
 		log.LLvl1(time.Now().Format(time.RFC3339), "Computed sy and syy")
@@ -1673,6 +1703,10 @@ func (ast *AssocTestPlainMult) GetAssociationStatsPlainMult() (crypto.CipherMatr
 	return nil, nil // party 0
 }
 
+// stdInvCtBoostBits is the scale boost (see mpc.SSToCMatBoosted) for the ciphertexts
+// ComputeStdInv returns.
+const stdInvCtBoostBits = 16
+
 // Returns stdinvx (per-SNP) and stdinvy (one per phenotype)
 func ComputeStdInv(cryptoParams *crypto.CryptoParams, mpcPar mpc.ParallelMPC, varx crypto.CipherVector, vary crypto.CipherMatrix, nsnps int, filter []bool, debug bool) (crypto.CipherVector, crypto.CipherVector) {
 	mpcObj := mpcPar[0]
@@ -1733,14 +1767,27 @@ func ComputeStdInv(cryptoParams *crypto.CryptoParams, mpcPar mpc.ParallelMPC, va
 		}
 	}
 
-	stdinvx := mpcObj.SSToCVec(cryptoParams, stdinvxSS)
+	// Both factors are encrypted at scale Δ·2^stdInvCtBoostBits (mpc.SSToCMatBoosted):
+	// they are small (1/sd; ~2e-3 for a phenotype with sd 10 at n = 2000) next to the
+	// ~1e-5 absolute noise of a fresh ciphertext at Δ = 2^34.
+	stdinvx := mpcObj.SSToCMatBoosted(cryptoParams, mpc_core.RMat{stdinvxSS}, stdInvCtBoostBits)[0]
 
-	// Convert stdinvy back to HE — one ciphertext per phenotype
+	// Convert stdinvy back to HE — one ciphertext per phenotype, the value in every slot.
+	// The share is replicated across slots in the secret-shared domain before conversion.
+	// (Encrypting it into slot 0 and replicating with InnerSumAll summed the encryption
+	// noise of all 8192 slots onto the value: for a phenotype with sd 10 that put a
+	// 5-10% error, different per run, on every r of the phenotype.)
+	rep := mpc_core.InitRMat(rtype.Zero(), npheno, slots)
+	for i := range rep {
+		for j := range rep[i] {
+			rep[i][j] = stdinvSS[nsnps+i].Copy()
+		}
+	}
+	repCt := mpcObj.SSToCMatBoosted(cryptoParams, rep, stdInvCtBoostBits)
 	stdinvy := make(crypto.CipherVector, npheno)
-	for i := 0; i < npheno; i++ {
-		stdinvy[i] = mpcObj.SStoCiphertext(cryptoParams, mpc_core.RVec{stdinvSS[nsnps+i]})
-		if pid > 0 { // no share on party 0; SStoCiphertext left it nil
-			stdinvy[i] = crypto.InnerSumAll(cryptoParams, crypto.CipherVector{stdinvy[i]})
+	if pid > 0 { // party 0 gets a dummy matrix from SSToCMat
+		for i := range stdinvy {
+			stdinvy[i] = repCt[i][0]
 		}
 	}
 
