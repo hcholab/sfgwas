@@ -1,7 +1,7 @@
 """Plaintext two-way Tractor on extract_tracts.py output, using tractor.ipynb's own functions.
 
 usage:
-  python -I scripts/tractor_plaintext.py --hapdose PREFIX --phenofile TABLE \
+  python -I scripts/tractor_plaintext.py --hapdose PREFIX [PREFIX ...] --phenofile TABLE \
       --phenocol y1[,y2,...] --covarcollist c1,c2,... --output OUT \
       [--sampleidcol IID] [--samples IDS_FILE] [--notebook tractor.ipynb] \
       [--count-threshold 20] [--det-tol 1e-6] [--chunksize 1000]
@@ -10,8 +10,10 @@ Inputs
   PREFIX.anc0.hapcount.txt[.gz], PREFIX.anc0.dosage.txt[.gz], PREFIX.anc1.dosage.txt[.gz]
       Output of Tractor's extract_tracts.py with --num-ancs 2 (one row per variant:
       CHROM POS ID REF ALT, then one column per VCF sample). PREFIX.anc1.hapcount is read
-      only for the first chunk, to check that every haplotype was assigned to exactly one
-      of the two ancestries.
+      only for each prefix's first chunk, to check that every haplotype was assigned to
+      exactly one of the two ancestries. Several prefixes (e.g. the per-window outputs of
+      tractor_extract_regions.sh) are read in the order given as one SNP list; their
+      sample columns must be identical.
   TABLE
       Whitespace-separated table with a header: a sample ID column (--sampleidcol), the
       phenotype columns (--phenocol) and the covariate columns (--covarcollist). Samples
@@ -38,6 +40,7 @@ Outputs
 """
 import argparse
 import gzip
+import itertools
 import json
 import os
 import sys
@@ -86,8 +89,12 @@ def reader(path, sample_pos, chunksize):
     usecols = list(range(5)) + [5 + i for i in sample_pos]
     dtype = {i: str for i in range(5)}
     dtype.update({5 + i: np.int8 for i in sample_pos})
-    for chunk in pd.read_csv(path, sep="\t", header=None, skiprows=1, usecols=usecols, dtype=dtype,
-                             chunksize=chunksize, engine="c"):
+    try:
+        chunks = pd.read_csv(path, sep="\t", header=None, skiprows=1, usecols=usecols, dtype=dtype,
+                             chunksize=chunksize, engine="c")
+    except pd.errors.EmptyDataError:  # header only: no variants
+        return
+    for chunk in chunks:
         info = chunk.iloc[:, :5].copy()
         info.columns = VARIANT_COLS
         # usecols ignores the order given, so select the sample columns in the requested order
@@ -95,9 +102,55 @@ def reader(path, sample_pos, chunksize):
         yield info.reset_index(drop=True), vals
 
 
+def hapdose_files(prefixes):
+    """Checks each prefix's hapdose files; returns ([(hap0, dos0, dos1, hap1 or None)], sample IDs)."""
+    files = []
+    for pre in prefixes:
+        if find_file(pre, 2, "dosage", required=False) or find_file(pre, 2, "hapcount", required=False):
+            sys.exit(f"{pre}.anc2.* exists: this is a two-way analysis; collapse the MSP to two "
+                     "ancestries and re-run extract_tracts.py with --num-ancs 2")
+        files.append((find_file(pre, 0, "hapcount"), find_file(pre, 0, "dosage"), find_file(pre, 1, "dosage"),
+                      find_file(pre, 1, "hapcount", required=False)))
+    hdr = read_header(files[0][0])
+    for fs in files:
+        for f in fs:
+            if f and read_header(f) != hdr:
+                sys.exit(f"{f}: sample columns differ from {files[0][0]}")
+    if len(set(hdr)) != len(hdr):
+        sys.exit(f"{files[0][0]}: duplicate sample IDs in the header")
+    return files, hdr
+
+
+def iter_hapdose(files, sample_pos, chunksize):
+    """Yields (info, A, M, E) chunks over all prefixes in order: A = anc0 hapcount, M = anc0
+    dosage, E = anc1 dosage, each SNPs x selected samples (int8). Checks that a prefix's three
+    files list the same variants and, on its first chunk, that the anc0 + anc1 haplotype
+    counts are 2."""
+    ci = 0
+    for fs in files:
+        first = True
+        for parts in itertools.zip_longest(*(reader(f, sample_pos, chunksize) for f in fs[:3])):
+            if any(p is None for p in parts):
+                sys.exit(f"{fs[0]}: its anc0.dosage / anc1.dosage files list a different number of variants")
+            (info, A), (info_m, M), (info_e, E) = parts
+            if not (info.equals(info_m) and info.equals(info_e)):
+                sys.exit(f"variant rows differ between the hapdose files of {fs[0]} (chunk {ci})")
+            if first and fs[3]:
+                _, A1 = next(reader(fs[3], sample_pos, chunksize), (None, None))
+                if A1 is None or A1.shape != A.shape or not np.all(A.astype(int) + A1 == 2):
+                    sys.exit(f"{fs[3]}: anc0 + anc1 haplotype counts are not 2 everywhere in the first chunk: some "
+                             "haplotypes were assigned to neither ancestry (was the MSP collapsed to two ancestries?)")
+            if A.min() < 0 or M.min() < 0 or E.min() < 0 or A.max() > 2 or (M > A).any() or (E > 2 - A).any():
+                sys.exit(f"{fs[0]} chunk {ci}: haplotype counts / dosages are inconsistent")
+            first = False
+            ci += 1
+            yield info, A, M, E
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--hapdose", required=True, help="prefix of the extract_tracts.py output files")
+    ap.add_argument("--hapdose", required=True, nargs="+",
+                    help="prefix(es) of the extract_tracts.py output files, read in order as one SNP list")
     ap.add_argument("--phenofile", required=True)
     ap.add_argument("--phenocol", required=True, help="comma-separated phenotype column names")
     ap.add_argument("--covarcollist", default="", help="comma-separated covariate column names")
@@ -113,20 +166,7 @@ def main():
 
     precompute, from_precomputed = load_notebook_functions(args.notebook)
 
-    if find_file(args.hapdose, 2, "dosage", required=False) or find_file(args.hapdose, 2, "hapcount", required=False):
-        sys.exit(f"{args.hapdose}.anc2.* exists: this is a two-way analysis; collapse the MSP to two "
-                 "ancestries and re-run extract_tracts.py with --num-ancs 2")
-    f_hap0 = find_file(args.hapdose, 0, "hapcount")
-    f_dos0 = find_file(args.hapdose, 0, "dosage")
-    f_dos1 = find_file(args.hapdose, 1, "dosage")
-    f_hap1 = find_file(args.hapdose, 1, "hapcount", required=False)
-
-    hdr = read_header(f_hap0)
-    for f in (f_dos0, f_dos1) + ((f_hap1,) if f_hap1 else ()):
-        if read_header(f) != hdr:
-            sys.exit(f"{f}: sample columns differ from {f_hap0}")
-    if len(set(hdr)) != len(hdr):
-        sys.exit(f"{f_hap0}: duplicate sample IDs in the header")
+    files, hdr = hapdose_files(args.hapdose)
 
     phenos = [c for c in args.phenocol.split(",") if c]
     covs = [c for c in args.covarcollist.split(",") if c]
@@ -185,17 +225,7 @@ def main():
     m = 0
     nvalid = {k: 0 for k in phenos}
     minp = {k: (np.inf, None) for k in phenos}
-    gens = [reader(f, sample_pos, args.chunksize) for f in (f_hap0, f_dos0, f_dos1)]
-    for ci, ((info, A), (info_m, M), (info_e, E)) in enumerate(zip(*gens)):
-        if not (info.equals(info_m) and info.equals(info_e)):
-            sys.exit(f"variant rows differ between the hapdose files in chunk {ci}")
-        if ci == 0 and f_hap1:
-            _, A1 = next(reader(f_hap1, sample_pos, args.chunksize))
-            if A1.shape != A.shape or not np.all(A.astype(int) + A1 == 2):
-                sys.exit("anc0 + anc1 haplotype counts are not 2 everywhere in the first chunk: some haplotypes "
-                         "were assigned to neither ancestry (was the MSP collapsed to two ancestries?)")
-        if A.min() < 0 or M.min() < 0 or E.min() < 0 or A.max() > 2 or (M > A).any() or (E > 2 - A).any():
-            sys.exit(f"chunk {ci}: haplotype counts / dosages are inconsistent")
+    for info, A, M, E in iter_hapdose(files, sample_pos, args.chunksize):
         stats = precompute(y=Y, Z=Z_reg, A=A.T.astype(float), X_AMR=M.T.astype(float), X_EUR=E.T.astype(float))
         r = from_precomputed(stats, count_threshold=thr, det_tol=args.det_tol)
         valid = np.asarray(r["valid"])
@@ -222,6 +252,8 @@ def main():
 
     for f in outs.values():
         f.close()
+    if m == 0:
+        sys.exit("no variants in the hapdose files")
     for k in phenos:
         best = f", smallest ancestry-specific p = {minp[k][0]:.3g} at {minp[k][1]}" if minp[k][1] else ""
         print(f"{k}: {nvalid[k]}/{m} SNPs valid{best} -> {args.output}.{k}.tsv")

@@ -33,7 +33,7 @@ import pandas as pd
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tractor_plaintext import VARIANT_COLS, find_file, read_header, reader  # noqa: E402
+from tractor_plaintext import VARIANT_COLS, find_file, hapdose_files, iter_hapdose, read_header  # noqa: E402
 
 KEY_NAMES = ["shared_key_global.bin", "shared_key_0_1.bin", "shared_key_0_2.bin", "shared_key_1_2.bin"]
 
@@ -162,7 +162,7 @@ def cmd_split(a):
     if a.msp and not (a.vcf_samples and a.msp_out):
         sys.exit("--msp needs --vcf-samples and --msp-out")
     if a.hapdose:
-        hdr = read_header(find_file(a.hapdose, 0, "hapcount"))
+        hdr = read_header(find_file(a.hapdose[0], 0, "hapcount"))
     else:
         hdr = [l.strip() for l in open(a.vcf_samples) if l.strip()]
     table = load_table(a.table, a.sampleidcol, phenos, covs)
@@ -277,14 +277,7 @@ def cmd_sfgwas(a):
     allids = [s for ids in parties for s in ids]
     if len(set(allids)) != len(allids):
         sys.exit("a sample appears in more than one party (or twice in one)")
-    f_hap0, f_dos0, f_dos1 = (find_file(a.hapdose, 0, "hapcount"), find_file(a.hapdose, 0, "dosage"),
-                              find_file(a.hapdose, 1, "dosage"))
-    if find_file(a.hapdose, 2, "dosage", required=False):
-        sys.exit(f"{a.hapdose}.anc2.* exists: collapse the MSP to two ancestries first")
-    hdr = read_header(f_hap0)
-    for f in (f_dos0, f_dos1):
-        if read_header(f) != hdr:
-            sys.exit(f"{f}: sample columns differ from {f_hap0}")
+    files, hdr = hapdose_files(a.hapdose)
     pos_of = {s: i for i, s in enumerate(hdr)}
     missing = [s for s in allids if s not in pos_of or s not in table.index]
     if missing:
@@ -320,12 +313,7 @@ def cmd_sfgwas(a):
                 np.ascontiguousarray(X[:, cols].T).astype(np.int8).tofile(os.path.join(d, f"{name}.{blk}.bin"))
         sizes.append(k)
 
-    gens = [reader(f, sample_pos, min(a.block_size, 1000)) for f in (f_hap0, f_dos0, f_dos1)]
-    for ci, ((info, A), (info_m, M), (info_e, E)) in enumerate(zip(*gens)):
-        if not (info.equals(info_m) and info.equals(info_e)):
-            sys.exit(f"variant rows differ between the hapdose files in chunk {ci}")
-        if A.min() < 0 or A.max() > 2 or (M > A).any() or (E > 2 - A).any() or M.min() < 0 or E.min() < 0:
-            sys.exit(f"chunk {ci}: haplotype counts / dosages are inconsistent")
+    for info, A, M, E in iter_hapdose(files, sample_pos, min(a.block_size, 1000)):
         for _, r in info.iterrows():
             chrom = r.CHROM[3:] if r.CHROM.lower().startswith("chr") else r.CHROM
             if not chrom.isdigit():
@@ -465,7 +453,7 @@ def main():
         p.add_argument("--covarcollist", default="")
 
     s = sub.add_parser("split", help="random party split of the usable samples")
-    s.add_argument("--hapdose", help="take the genotyped samples from these hapdose files ...")
+    s.add_argument("--hapdose", nargs="+", help="take the genotyped samples from these hapdose files ...")
     s.add_argument("--vcf-samples", help="... or from this list (bcftools query -l), in VCF order")
     s.add_argument("--msp", help="also restrict this (two-way) MSP to the chosen samples (needs --vcf-samples)")
     s.add_argument("--msp-out")
@@ -476,7 +464,8 @@ def main():
     s.add_argument("--out-dir", required=True)
 
     f = sub.add_parser("sfgwas", help="write an sfgwas Tractor run directory")
-    f.add_argument("--hapdose", required=True)
+    f.add_argument("--hapdose", required=True, nargs="+",
+                   help="prefix(es) of the extract_tracts.py output files, read in order as one SNP list")
     common(f)
     f.add_argument("--party-ids", nargs="+", required=True)
     f.add_argument("--run-dir", required=True)
